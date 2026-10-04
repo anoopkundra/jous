@@ -1,6 +1,6 @@
 # JOUS.CORE.1A — Foundation & Domain Architecture Gate
 
-**Status:** PROPOSED — READY FOR FOUNDER REVIEW  
+**Status:** APPROVED — READY FOR IMPLEMENTATION  
 **Project:** Jous  
 **Gate:** JOUS.CORE.1A  
 **Date:** 2026-10-04  
