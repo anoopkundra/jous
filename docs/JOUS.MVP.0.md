@@ -10,13 +10,13 @@
 
 \*\*Canonical Domain:\*\* jous.si  
 
-\*\*Depends on:\*\* JOUS.SUPPLY.1, JOUS.ECON.1  
+\*\*Depends on:\*\* JOUS.SUPPLY.1, JOUS.ECON.1, JOUS.CONTEXT.1  
 
 \*\*Implementation Owner:\*\* Jous  
 
 \*\*Primary Engineering Agent:\*\* Codex  
 
-\*\*Updated:\*\* October 3, 2026
+\*\*Updated:\*\* October 4, 2026
 
 
 
@@ -49,6 +49,12 @@ Detailed wallet, funding, unit economics and rewards decisions remain authoritat
 
 
 \- `docs/decisions/JOUS.ECON.1.md`
+
+
+Detailed project context, memory and customer execution-policy decisions remain authoritative in:
+
+
+\- `docs/decisions/JOUS.CONTEXT.1.md`
 
 
 
@@ -380,7 +386,7 @@ A qualified builder should be able to:
 
 3\. use eligible free AI or fund Jous Balance,
 
-4\. choose a model or Jous Auto,
+4\. choose Jous Auto, an allowed model stack, or a pinned logical model according to available execution-policy controls,
 
 5\. submit a request,
 
@@ -1712,13 +1718,23 @@ Conceptually:
 
 \*\*Task Understanding  
 
-→ Capability Requirements  
+→ Project / Customer Execution Policy  
+
+→ Context Requirement  
+
+→ Context Retrieval  
+
+→ Context Assembly  
 
 → Context Optimization  
 
-→ Model Selection  
+→ Capability Requirements  
 
-→ Supplier Selection  
+→ Eligible Model(s)  
+
+→ Customer Model Preference  
+
+→ Eligible Supplier Routes  
 
 → Economic Evaluation  
 
@@ -1744,7 +1760,43 @@ Complex autonomous routing should not be built before enough evidence exists.
 
 
 
-\# 27. Routing Modes
+\# 27. Execution Policy and Routing Modes
+
+
+JOUS.CONTEXT.1 establishes three canonical customer execution-policy modes:
+
+
+\### JOUS_AUTO
+
+
+Jous selects the logical model and eligible supplier route within customer constraints.
+
+
+\### MODEL_STACK
+
+
+The customer defines an ordered logical-model preference stack. Jous must respect that order and may optimize eligible supplier selection underneath each logical model.
+
+
+\### PINNED_MODEL
+
+
+The customer pins one logical model. Jous may optimize eligible supplier selection underneath that model. Cross-model fallback is allowed only when customer policy explicitly permits it.
+
+
+Canonical principle:
+
+
+> Customer policy constrains optimization. Jous optimizes within those constraints.
+
+
+Model selection and supplier selection are separate architectural decisions.
+
+
+Context continuity must survive transitions among JOUS_AUTO, MODEL_STACK and PINNED_MODEL.
+
+
+Within JOUS_AUTO and other permitted execution policies, architecture should allow routing preferences such as:
 
 
 
@@ -2076,9 +2128,15 @@ MVP should support:
 
 \- text/chat,
 
-\- model selection,
+\- execution-policy selection,
 
 \- Jous Auto,
+
+\- model-stack controls where entitled,
+
+\- pinned-model controls where entitled,
+
+\- project context continuity,
 
 \- streaming,
 
@@ -2197,6 +2255,10 @@ Savings claims require defensible evidence.
 
 
 Project is the primary unit for understanding what AI spending produced.
+
+Project is also the primary context-continuity boundary for builder work.
+
+JOUS.CONTEXT.1 governs Project Memory, Project State, source context, context assembly and execution policy. Project intelligence and Project Economics must remain connected without making a memory engine authoritative for the Jous Project.
 
 
 
@@ -2442,45 +2504,53 @@ Do not build a generalized marketplace platform yet.
 
 2\. Customer selects organization and project.
 
-3\. Customer selects model or Jous Auto.
+3\. Jous resolves the applicable ExecutionPolicy: JOUS_AUTO, MODEL_STACK or PINNED_MODEL.
 
 4\. Jous checks account and project status.
 
-5\. Jous checks Free eligibility or available Jous Balance/BYOK.
+5\. Jous determines the task's context requirement.
 
-6\. Jous checks commercial eligibility.
+6\. Jous retrieves relevant conversation, Project Memory, Project State, decisions, sources, instructions and Working Context as available.
 
-7\. Jous determines eligible logical model routes.
+7\. Jous assembles a bounded ContextPackage with provenance and project isolation.
 
-8\. Jous produces or records RouteDecision.
+8\. Jous determines capability requirements and eligible logical model(s) within customer policy.
 
-9\. SupplyAdapter executes the request.
+9\. Jous checks Free eligibility or available Jous Balance/BYOK.
 
-10\. Workspace streams the response.
+10\. Jous checks commercial eligibility.
 
-11\. Jous captures provisional usage evidence.
+11\. Jous determines eligible supplier routes for the allowed logical model(s).
 
-12\. Supplier/gateway returns usage/cost evidence.
+12\. Jous produces or records RouteDecision.
 
-13\. Jous creates canonical UsageEvent.
+13\. SupplyAdapter executes the request using the approved ContextPackage.
 
-14\. Jous calculates supplier cost and JEAC.
+14\. Workspace streams the response.
 
-15\. Jous determines customer charge.
+15\. Jous captures provisional usage and context evidence.
 
-16\. Ledger posts customer deduction when applicable.
+16\. Supplier/gateway returns usage/cost evidence.
 
-17\. Project Economics receives attribution.
+17\. Jous creates canonical UsageEvent.
 
-18\. Spend Intelligence updates.
+18\. Jous calculates supplier cost and JEAC.
 
-19\. Rewards Engine evaluates eligibility.
+19\. Jous determines customer charge.
 
-20\. Eligible reward enters appropriate lifecycle state.
+20\. Ledger posts customer deduction when applicable.
 
-21\. Reconciliation confirms or adjusts economic evidence.
+21\. Project Economics receives attribution.
 
-22\. Customer-facing economic history updates.
+22\. Spend Intelligence updates.
+
+23\. Rewards Engine evaluates eligibility.
+
+24\. Eligible reward enters appropriate lifecycle state.
+
+25\. Reconciliation confirms or adjusts economic evidence.
+
+26\. Customer-facing context and economic history update according to policy.
 
 
 
@@ -3344,6 +3414,12 @@ Includes:
 
 \- Project,
 
+\- context-ready project boundaries,
+
+\- execution-policy-ready architecture,
+
+\- conversation/source-ready architecture,
+
 \- supplier/model abstractions,
 
 \- baseline tests.
@@ -3362,7 +3438,13 @@ Do NOT yet implement:
 
 \- autonomous routing,
 
-\- customer fund handling.
+\- customer fund handling,
+
+\- production memory-engine integration,
+
+\- full Project Memory retrieval,
+
+\- complex context optimization.
 
 
 
@@ -3376,7 +3458,11 @@ Acceptance:
 
 \- tests pass,
 
-\- no supplier-specific leakage into core domain.
+\- no supplier-specific leakage into core domain,
+
+\- no memory-vendor-specific leakage into canonical Project semantics,
+
+\- foundation permits future JOUS_AUTO, MODEL_STACK and PINNED_MODEL execution policies without schema or domain redesign.
 
 
 
@@ -3578,9 +3664,15 @@ Includes:
 
 \- project selection,
 
-\- model selection,
+\- execution-policy selection,
 
 \- Jous Auto basic policy,
+
+\- model-stack and pinned-model controls as approved for the gate,
+
+\- project context continuity,
+
+\- bounded ContextPackage assembly using the approved JOUS.CONTEXT implementation for this gate,
 
 \- usage display,
 
@@ -3596,7 +3688,7 @@ A customer request creates one reconstructable chain:
 
 
 
-\*\*Request → RouteDecision → Supplier Execution → UsageEvent → Project Attribution\*\*
+\*\*Request → ContextPackage → ExecutionPolicy → RouteDecision → Supplier Execution → UsageEvent → Project Attribution\*\*
 
 
 
@@ -4156,11 +4248,13 @@ Implementation authority should be read in this order:
 
 2\. `JOUS.ECON.1`
 
-3\. `JOUS.MVP.0`
+3\. `JOUS.CONTEXT.1`
 
-4\. Gate-specific implementation specification
+4\. `JOUS.MVP.0`
 
-5\. Code and tests
+5\. Gate-specific implementation specification
+
+6\. Code and tests
 
 
 
@@ -4201,6 +4295,12 @@ No uncontrolled AI spend.
 
 
 No complex routing.
+
+No production memory engine.
+
+No full context-retrieval implementation.
+
+The foundation must preserve the Project Context and Execution Policy seams required by JOUS.CONTEXT.1.
 
 
 
