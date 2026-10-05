@@ -968,30 +968,113 @@ Jous User UUID across future identity-provider changes.
 No four-table schema change is approved for Step 6. No migration `0002`.
 The current issuer/subject linkage is sufficient for initial single-provider identity.
 
-### Step 7 Database Security Direction
+### Step 7 Founder Decision: Approved Database Security Architecture
 
-Use a dedicated Jous runtime role with migration/admin credentials separate from
-runtime credentials. The runtime role must have no schema ownership, DDL, role
-administration, BYPASSRLS, ability to assume privileged roles, migration-history
-writes, or access to unrelated Supabase-managed objects. Grant only minimum required
-table privileges. Establish RLS defense-in-depth on all four foundation tables and
-validate isolation on managed PostgreSQL using the actual runtime role.
+Status: APPROVED - Step 7 architecture; implementation remains separately authorized.
 
-Application authorization remains authoritative for business/action permissions.
-Database RLS provides tenant-row isolation and defense against query mistakes.
-Do not weaken or disable existing RLS.
+The founder approves the refined Step 7 architecture below. This decision does not
+implement Step 7 or authorize database changes in this documentation task.
 
-Provider-neutral transaction-local identity/tenant context is the leading design;
-its exact implementation awaits Step 7 review. Prove initialization every transaction,
-parameterized values, transaction-local lifetime, no persistent session identity,
-missing/malformed context denial, rollback/exception/cancellation safety, sequential
-connection reuse safety and concurrent tenant isolation with no pool leakage.
+#### Runtime and Helper Roles
 
-Before public CRUD, require passing production credential verification, safe mapping
-to active internal User, central action permissions, dedicated runtime role, RLS
-policies, transaction context, real runtime-role cross-tenant PostgreSQL tests,
-pooled-connection isolation, safe errors/logging and absence of public impersonation
-or test routes.
+Use a dedicated restricted `jous_runtime` PostgreSQL LOGIN for application traffic,
+separate from migration/admin credentials. The runtime role must have no schema or
+table ownership, DDL, role administration, BYPASSRLS, ability to assume privileged
+roles, migration-history writes, or access to unrelated Supabase-managed objects.
+Grant only minimum required privileges and verify effective grants and memberships.
+Do not use Supabase service-role or migration/admin credentials as runtime credentials.
+
+Use a dedicated minimal `jous_security_reader` NOLOGIN helper-owner role. Runtime
+must have no membership in or ability to assume this role. Grant no automatic
+future-table privileges. Keep Jous object ownership and migration/admin authority
+separate from runtime and helper authority.
+
+#### Exactly Two Privileged Helpers
+
+Approve exactly two narrowly privileged SECURITY DEFINER helpers:
+
+- `resolve_user(issuer, subject)` returns only the internal User UUID or NULL for an
+  exact issuer/subject match to an active existing User. It reads only the required
+  `users` columns: `id`, `auth_issuer`, `auth_subject`, and `status`. No email lookup,
+  normalization, fuzzy matching, account linking or provisioning is permitted.
+- `organization_is_active(organization_id)` returns only whether the exact
+  Organization UUID identifies an active Organization. It reads only
+  `organizations.id` and `organizations.status` and returns false on missing or
+  inactive records.
+
+Neither helper may read Memberships or Projects, mutate data, provision records,
+select tenants, or evaluate owner/member authorization. The helper-owner role
+receives only the required schema usage and column reads, with explicit
+role-specific SELECT policies. It receives no table ownership, writes, DDL,
+privileged role memberships or BYPASSRLS.
+
+Use fixed secure search paths, fully qualified objects, validated arguments and no
+dynamic SQL. Revoke PUBLIC EXECUTE atomically and grant execution explicitly only
+to runtime. Helpers must not be IMMUTABLE; use STABLE and PARALLEL UNSAFE initially.
+Unexpected database faults remain failures handled by the safe application boundary.
+
+The User resolver breaks the pre-identity bootstrap cycle. The Organization status
+helper breaks the Membership/Organization policy cycle without privileged membership
+evaluation. Membership status and recognized owner/member role eligibility remain
+under ordinary runtime RLS. Runtime User reads after bootstrap are limited to the
+required `id` and `status` columns.
+
+#### Transaction Context and RLS
+
+Use provider-neutral transaction-local `jous.user_id` and `jous.organization_id`.
+Project ID remains an application/row scope, not database session context.
+
+Verify the external credential, begin the transaction and initialize empty context,
+resolve the active internal User, and establish User context. Normal runtime RLS
+permits discovery only of that active User's active, recognized-role Memberships in
+active Organizations. Validate the candidate Organization before establishing
+Organization context, then revalidate Organization access and central action
+permissions. Once Organization context exists, Membership visibility is additionally
+restricted to that Organization. Client-selected identifiers alone confer no authority.
+
+ENABLE and FORCE RLS on `users`, `organizations`, `organization_memberships` and
+`projects`, with explicit role-specific policies and actual runtime-role validation.
+Keep the policy dependency graph acyclic. Use command-specific permissive policies
+with restrictive runtime isolation guards so future permissive policies cannot
+silently broaden tenant access. Do not weaken or disable existing RLS.
+
+Application authentication and central action authorization remain authoritative for
+product permissions. RLS primarily provides tenant/data isolation and defense
+against query mistakes; it does not replace owner/member action authorization.
+
+The founder accepts that ordinary PostgreSQL transaction-local GUC context is not a
+cryptographic boundary against an attacker possessing the raw runtime database
+credential with arbitrary SQL execution. Such an attacker can forge context values;
+RLS must not be represented as preventing that credential-compromise scenario.
+
+Prove context initialization every transaction, parameterized values, transaction-local
+lifetime, no persistent session identity, missing/malformed context denial,
+rollback/exception/cancellation safety, sequential connection reuse safety and
+concurrent tenant isolation with no pool leakage.
+
+Keep Project RLS tenant-focused. Do not freeze Project archival/lifecycle semantics
+in Step 7 and do not grant runtime Project `status` update capability in this step.
+Existing application active-Project access checks remain in force.
+
+#### Controlled Validation and Public CRUD Gate
+
+Controlled real-runtime-login validation may use uniquely identified committed
+temporary fixtures created administratively. Document deterministic cleanup, control
+runtime mutations, clean up in reverse dependency order, and verify final migration
+revision, database state and row counts against the recorded baseline. Validate
+through the actual restricted runtime login, not only a privileged connection.
+
+Public CRUD remains prohibited until Step 6 and Step 7 security evidence passes the
+separate PUBLIC CRUD SECURITY GATE. Required evidence includes production credential
+verification, safe mapping to active internal User, central action permissions,
+dedicated runtime-role privileges, RLS policies, transaction context, real runtime-role
+cross-tenant PostgreSQL tests, pooled-connection isolation, safe errors/logging and
+absence of public impersonation or test routes. Passing the gate does not itself
+authorize CRUD implementation.
+
+No public onboarding or provisioning is authorized. This decision creates no roles,
+policies or migration; Step 7 implementation and controlled infrastructure execution
+remain separately authorized tasks.
 
 ### Preserved Invariants
 
