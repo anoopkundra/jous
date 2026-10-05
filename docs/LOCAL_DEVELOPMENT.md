@@ -1,4 +1,4 @@
-# CORE.1A Steps 1–4 local development
+# CORE.1A Steps 1–5 local development
 
 Use Node 22.22.0 / npm 10.9.4 and Python 3.12.10. Python metadata currently targets
 3.12 only; widening support requires validation. Run commands from the repository
@@ -186,7 +186,62 @@ Never run this cycle on a populated/shared database. Do not use `CASCADE` or alt
 managed objects to bypass a safety failure. A failed stage stops further changes;
 inspect the current revision securely before proceeding.
 
-Authorization and tenant-scoped CRUD remain subsequent work.
+## Non-public identity and tenant access
+
+Step 5 implements `VerifiedPrincipal(issuer, subject)` as a trusted-adapter output
+contract; it does not verify tokens. Issuer/subject values are matched exactly to
+an active Jous User. They are omitted from repr. `RequestIdentity(user_id)` contains
+only the internal User UUID, separate from request correlation. Unknown identities
+fail closed, with no provisioning, account linking or email-based matching.
+
+`AccessService` performs read-only SQLAlchemy queries. Organization access requires
+the exact active User, active Organization, active membership joining both, and
+the only currently recognized base role `member`. Unknown statuses and roles deny
+access; no owner/admin or membership-management behavior exists. Project access
+additionally requires an active Project with both the requested Project UUID and
+authorized Organization UUID. It rechecks the entire membership/active-record
+relationship, so a previously constructed scope does not bypass revocation checks.
+Immutable Organization/Project scope values contain verified identifiers; they
+are not bearer capabilities. Internal services must continue scoped checks for
+later operations. No identity or scope is stored in mutable global state.
+
+FastAPI dependencies provide trusted principal resolution, one transaction/session
+per request, identity mapping, and Organization/Project scopes. The default
+`get_verified_principal` dependency rejects with HTTP 401. There is no configuration
+switch, trusted identity header or production credential adapter. Test applications
+can override dependencies in-process; temporary test routes are defined only in
+tests and never registered in the normal app. Its only routes remain health routes.
+
+Access failures return generic correlated JSON: HTTP 401 `identity_required` for
+unresolved identity, HTTP 404 `resource_unavailable` for inaccessible resources.
+Missing and cross-tenant Project errors are identical. Logs contain only bounded
+events/status/correlation, never principal values, credentials or tokens. Client
+Organization/Project identifiers select resources; they never establish authority.
+
+Application-layer checks are the explicit Step 5 enforcement boundary. Existing
+Supabase RLS remains enabled, with no new policies or role/grant changes. Controlled
+tests use a privileged connection to prove application checks despite RLS bypass;
+they do not prove runtime database-role isolation. Public CRUD remains blocked
+until trusted external authentication, action permissions and the runtime database
+role/RLS strategy are separately approved and tested. Domain services contain no
+Supabase-specific authorization semantics.
+
+After securely exporting the managed test database configuration, run the separate
+non-migrating validation:
+
+```text
+python tests/validate_managed_access.py --target-fingerprint <verified-target-fingerprint>
+```
+
+Use the fingerprint procedure above. The validator refuses production settings,
+target mismatch, unexpected revision, nonempty domain tables or inability to see
+unfiltered row counts. It creates unique temporary A/B/C identities and A/B tenant
+records inside one transaction, checks positive and negative access, inactive and
+unknown states, wrong ownership and stale/forged scopes, then rolls everything
+back. It confirms empty tables, unchanged table/RLS/policy state and revision
+`0001_identity_project`. It never runs migrations or alters managed schemas.
+Managed PostgreSQL remains the development path; no local server installation is
+required. Ordinary tests remain offline.
 
 ## Repository safety
 

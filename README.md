@@ -1,8 +1,8 @@
 # Jous
 
 Jous is the economic layer for AI builders. This checkout implements only
-JOUS.CORE.1A Steps 1–4: repository boundaries, configured process health,
-PostgreSQL connectivity/session infrastructure, and foundational schema migrations.
+JOUS.CORE.1A Steps 1–5: repository boundaries, configured process health,
+PostgreSQL/schema infrastructure, and a non-public identity/tenant access foundation.
 
 | Path | Responsibility |
 | --- | --- |
@@ -30,6 +30,10 @@ PostgreSQL installation is required. This shell has no
 frontend API connectivity, CRUD workflows, authentication, model
 execution, routing, ledger, wallet, rewards, payments, or memory engine.
 It is not deployment-ready and does not complete CORE.1A.
+Step 5 adds immutable identity/scope values and persistence-backed access checks.
+The normal app exposes only health routes and rejects unconfigured trusted identity
+resolution. Public CRUD remains blocked on separately approved authentication,
+runtime database-role/RLS and action-permission decisions.
 
 See [local development](docs/LOCAL_DEVELOPMENT.md) and
 [dependencies](docs/DEPENDENCIES.md). Jous source remains proprietary; dependency

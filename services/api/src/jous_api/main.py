@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from .config import ConfigurationError, Settings, load_settings
 from .database import Database
+from .identity import AccessDenied
 from .middleware import RequestBoundary
 from .observability import application_logger
 
@@ -40,6 +41,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.logger = logger
     application.state.database = database
     application.add_middleware(RequestBoundary, logger=logger)
+
+    @application.exception_handler(AccessDenied)
+    async def access_denied(request: Request, error: AccessDenied):
+        logger.warning("", extra={"event": "access_denied", "status_code": error.status_code})
+        unauthenticated = error.status_code == 401
+        return JSONResponse(status_code=error.status_code, content={
+            "error": {"code": "identity_required" if unauthenticated else "resource_unavailable",
+                      "message": "Identity required" if unauthenticated else "Resource unavailable"},
+            "request_id": request.state.request_id})
 
     @application.get("/health/live")
     async def liveness():

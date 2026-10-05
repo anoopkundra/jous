@@ -19,6 +19,13 @@ credential-safety and no-connection import checks. A separate explicitly invoked
 `validate_managed_migrations.py` checks an empty managed PostgreSQL project; it
 is not part of unittest discovery. See local-development documentation for safety
 requirements and invocation. No local PostgreSQL installation is required.
-Authorization, CRUD, isolation, and
+Step 5 adds immutable identity/scope, exact identity mapping, scoped SQL predicates,
+default identity rejection, forged-header rejection, correlated safe access errors,
+identical inaccessible/missing Project responses and concurrent request-isolation
+tests. Temporary routes and identity overrides exist only in test applications.
+`validate_managed_access.py` separately proves actual PostgreSQL access behavior
+with transactional temporary records and rollback, preserving revision and RLS.
+It is not included in unittest discovery; see local-development documentation.
+Production authentication, CRUD, runtime-role/RLS validation, and
 supplier-contract tests arrive with their corresponding implementation steps.
 Tests must never require production credentials, paid inference, or customer funds.
