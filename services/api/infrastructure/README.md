@@ -43,6 +43,21 @@ giving runtime privileged membership. Record any separately approved admin grant
 
 The schema owner temporarily grants CREATE on the new private schema to the helper
 owner solely to assign function ownership, then revokes it before migration commit.
+For a non-superuser PostgreSQL 17 migration admin, ownership transfer also requires
+SET capability to jous_security_reader; ADMIN OPTION alone is insufficient. Obtain
+that capability only through a separately authorized temporary prerequisite, keeping
+INHERIT false. It is not permanent runtime or role-bootstrap authority. Complete
+PUBLIC revocation and runtime EXECUTE grants while the admin still owns each helper;
+ownership transfer is the final function-management operation for that helper during
+upgrade. Verify migration ownership/ACLs, then remove temporary SET authority with
+grantor-aware membership cleanup and verify the final membership state. Prefer one
+controlled transaction encompassing prerequisite, migration, verification and cleanup;
+if separately committed, a migration failure requires explicit prerequisite cleanup.
+Future helper changes require bounded owner maintenance: temporary SET capability,
+an explicit helper-owner role section where owner commands are needed, restoration
+of the admin role, and removal of temporary authority before commit. The admin-owned
+helper schema permits the existing PostgreSQL 17 downgrade to drop its contained
+helpers without permanent SET capability; verify schema ownership before downgrade.
 Helper SELECT policies are role-specific and read-only. Ordinary GUCs are not a
 cryptographic boundary against someone executing arbitrary SQL with runtime login.
 

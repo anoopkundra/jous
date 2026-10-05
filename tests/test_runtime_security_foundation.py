@@ -2,6 +2,7 @@
 import asyncio
 import importlib.util
 import io
+import re
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -493,6 +494,37 @@ class MigrationContractTests(unittest.TestCase):
             self.assertNotIn("organization_memberships", body)
             self.assertNotIn("projects", body)
             self.assertNotIn("INSERT", body)
+
+    def test_helper_acls_precede_final_ownership_transfer(self):
+        sql = self.render()
+        grant_create = sql.index("GRANT CREATE ON SCHEMA jous_security TO jous_security_reader;")
+        revoke_create = sql.index("REVOKE CREATE ON SCHEMA jous_security FROM jous_security_reader;")
+        for signature in ("resolve_user(text, text)", "organization_is_active(uuid)"):
+            with self.subTest(signature=signature):
+                name = signature.split("(")[0]
+                create = sql.index(f"CREATE FUNCTION jous_security.{name}(")
+                revoke = sql.index(f"REVOKE ALL ON FUNCTION jous_security.{signature} FROM PUBLIC;")
+                grant = sql.index(f"GRANT EXECUTE ON FUNCTION jous_security.{signature} TO jous_runtime;")
+                transfer = sql.index(f"ALTER FUNCTION jous_security.{signature} OWNER TO jous_security_reader;")
+                self.assertLess(create, revoke)
+                self.assertLess(revoke, grant)
+                self.assertLess(grant, transfer)
+                self.assertLess(grant_create, transfer)
+                self.assertLess(transfer, revoke_create)
+                # Policy calls may follow transfer; function-management commands may not.
+                management = re.findall(
+                    rf"(?:CREATE(?: OR REPLACE)?|ALTER|DROP) FUNCTION jous_security\.{name}\b[^;]*;"
+                    rf"|(?:GRANT|REVOKE)[^;]*ON FUNCTION jous_security\.{name}\b[^;]*;",
+                    sql, re.DOTALL,
+                )
+                self.assertEqual(len(management), 4)
+                self.assertEqual(management[-1],
+                                 f"ALTER FUNCTION jous_security.{signature} OWNER TO jous_security_reader;")
+        self.assertIn("GRANT SELECT (id, auth_issuer, auth_subject, status) ON public.users TO jous_security_reader;", sql)
+        self.assertIn("GRANT SELECT (id, status) ON public.organizations TO jous_security_reader;", sql)
+        helper_table_grants = re.findall(r"GRANT [^;]*ON (?:TABLE )?public\.[^;]*TO jous_security_reader;", sql)
+        self.assertEqual(len(helper_table_grants), 2)
+        self.assertNotIn("SET ROLE", sql)
 
     def test_downgrade_preserves_enabled_rls_and_domain_tables(self):
         sql = self.render(True)

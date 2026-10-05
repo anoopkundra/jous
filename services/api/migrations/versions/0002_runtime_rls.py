@@ -93,8 +93,9 @@ def upgrade():
     op.execute("GRANT CREATE ON SCHEMA jous_security TO jous_security_reader")
     for signature in ("resolve_user(text, text)", "organization_is_active(uuid)"):
         op.execute(f"REVOKE ALL ON FUNCTION jous_security.{signature} FROM PUBLIC")
-        op.execute(f"ALTER FUNCTION jous_security.{signature} OWNER TO jous_security_reader")
         op.execute(f"GRANT EXECUTE ON FUNCTION jous_security.{signature} TO jous_runtime")
+        # Finish ACLs as creator; SET capability alone does not inherit owner rights.
+        op.execute(f"ALTER FUNCTION jous_security.{signature} OWNER TO jous_security_reader")
     op.execute("REVOKE CREATE ON SCHEMA jous_security FROM jous_security_reader")
     for table in TABLES:
         op.execute(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY")
