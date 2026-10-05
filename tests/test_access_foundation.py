@@ -76,15 +76,15 @@ class AccessQueryTests(unittest.IsolatedAsyncioTestCase):
             await service.organization(RequestIdentity(user), organization)
         organization_sql = session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())
         for predicate in ("users.id =", "users.status =", "organizations.id =", "organizations.status =",
-                          "organization_memberships.status =", "organization_memberships.role ="):
+                          "organization_memberships.status =", "organization_memberships.role IN"):
             self.assertIn(predicate, str(organization_sql))
-        self.assertIn("member", organization_sql.params.values())
+        self.assertEqual(organization_sql.params["role_1"], ["member", "owner"])
         self.assertNotIn("admin", organization_sql.params.values())
         with self.assertRaises(AccessDenied):
             await service.project(OrganizationScope(user, organization), project)
         project_sql = session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())
         for predicate in ("projects.id =", "projects.organization_id =", "projects.status =",
-                          "users.id =", "organization_memberships.status =", "organization_memberships.role ="):
+                          "users.id =", "organization_memberships.status =", "organization_memberships.role IN"):
             self.assertIn(predicate, str(project_sql))
         self.assertIn(organization, project_sql.params.values())
         self.assertIn(project, project_sql.params.values())

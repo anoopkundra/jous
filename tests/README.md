@@ -26,6 +26,15 @@ tests. Temporary routes and identity overrides exist only in test applications.
 `validate_managed_access.py` separately proves actual PostgreSQL access behavior
 with transactional temporary records and rollback, preserving revision and RLS.
 It is not included in unittest discovery; see local-development documentation.
-Production authentication, CRUD, runtime-role/RLS validation, and
-supplier-contract tests arrive with their corresponding implementation steps.
+Step 6 adds offline real ES256 signature verification, user-token claim/time checks,
+JWKS transport/cache/rotation/outage bounds, Bearer extraction, credential-safe
+correlated failures, concurrent production-dependency identity isolation, and the
+complete owner/member action matrix with scoped persistence revalidation. Generated
+test keys and tokens exist only in memory; no real authentication credentials or
+network access are needed. CRUD, runtime-role/RLS validation, and supplier-contract
+tests arrive with their corresponding implementation steps.
+JWKS lifecycle regressions use actual controlled blocking worker threads, with
+bounded release/cleanup. They prove one real fetch survives caller timeout and
+cancellation without replacement, concurrent random-key requests coalesce, valid
+cached tokens do not wait for unrelated refreshes, and close rejects late results.
 Tests must never require production credentials, paid inference, or customer funds.

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .identity import AccessDenied, OrganizationScope, ProjectScope, RequestIdentity, VerifiedPrincipal
 from .models import Organization, OrganizationMembership, Project, User
+from .permissions import KNOWN_ROLES
 
 
 class AccessService:
@@ -30,13 +31,13 @@ class AccessService:
 
     @staticmethod
     def organization_query(identity: RequestIdentity, organization_id: UUID):
-        # Only the known base role is supported. No owner/admin privileges exist.
+        # Known active memberships grant base access, not action-specific privileges.
         return select(Organization.id).join(
             OrganizationMembership, OrganizationMembership.organization_id == Organization.id
         ).join(User, User.id == OrganizationMembership.user_id).where(
             User.id == identity.user_id, User.status == "active",
             Organization.id == organization_id, Organization.status == "active",
-            OrganizationMembership.status == "active", OrganizationMembership.role == "member")
+            OrganizationMembership.status == "active", OrganizationMembership.role.in_(KNOWN_ROLES))
 
     async def organization(self, identity: RequestIdentity, organization_id: UUID) -> OrganizationScope:
         result = await self.session.scalar(self.organization_query(identity, organization_id))

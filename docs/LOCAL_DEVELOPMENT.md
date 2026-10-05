@@ -196,8 +196,9 @@ fail closed, with no provisioning, account linking or email-based matching.
 
 `AccessService` performs read-only SQLAlchemy queries. Organization access requires
 the exact active User, active Organization, active membership joining both, and
-the only currently recognized base role `member`. Unknown statuses and roles deny
-access; no owner/admin or membership-management behavior exists. Project access
+recognized roles `member` or `owner`. Unknown statuses and roles deny
+access; action permissions are centralized, with no admin or membership-management
+behavior. Project access
 additionally requires an active Project with both the requested Project UUID and
 authorized Organization UUID. It rechecks the entire membership/active-record
 relationship, so a previously constructed scope does not bypass revocation checks.
@@ -207,8 +208,9 @@ later operations. No identity or scope is stored in mutable global state.
 
 FastAPI dependencies provide trusted principal resolution, one transaction/session
 per request, identity mapping, and Organization/Project scopes. The default
-`get_verified_principal` dependency rejects with HTTP 401. There is no configuration
-switch, trusted identity header or production credential adapter. Test applications
+`get_verified_principal` dependency verifies Bearer credentials through the Step 6
+replaceable adapter; without configured issuer/JWKS it rejects with HTTP 401.
+There is no impersonation configuration switch or trusted identity header. Test applications
 can override dependencies in-process; temporary test routes are defined only in
 tests and never registered in the normal app. Its only routes remain health routes.
 
@@ -222,8 +224,8 @@ Application-layer checks are the explicit Step 5 enforcement boundary. Existing
 Supabase RLS remains enabled, with no new policies or role/grant changes. Controlled
 tests use a privileged connection to prove application checks despite RLS bypass;
 they do not prove runtime database-role isolation. Public CRUD remains blocked
-until trusted external authentication, action permissions and the runtime database
-role/RLS strategy are separately approved and tested. Domain services contain no
+until both Step 6 credential/action validation and Step 7 runtime database
+role/RLS validation pass. Domain services contain no
 Supabase-specific authorization semantics.
 
 After securely exporting the managed test database configuration, run the separate
@@ -242,6 +244,60 @@ back. It confirms empty tables, unchanged table/RLS/policy state and revision
 `0001_identity_project`. It never runs migrations or alters managed schemas.
 Managed PostgreSQL remains the development path; no local server installation is
 required. Ordinary tests remain offline.
+
+## Step 6 credential verification and action authorization
+
+Export `JOUS_AUTH_ISSUER`, `JOUS_AUTH_AUDIENCE` and `JOUS_AUTH_JWKS_URL` through the
+existing settings boundary. For the approved Jous project, issuer is
+`https://aqcixpoorbhjgvdkdjqd.supabase.co/auth/v1`, audience is `authenticated`, and
+JWKS is that issuer plus `/.well-known/jwks.json`. The example file contains only
+placeholders. Omit both issuer/JWKS to reject all credentials; partial or unsafe
+configuration fails validation. Settings/app construction makes no network request.
+
+The provider-neutral verifier returns only `VerifiedPrincipal(issuer, subject)`.
+Read-only identity resolution requires the exact mapping to an active pre-provisioned
+internal User. No accounts, organizations, memberships or projects are provisioned;
+no email linking exists. Supabase's enabled signup setting grants no Jous access.
+Disabling signup before production-like controlled testing is a separate authorized
+dashboard task. No dashboard settings are changed by this code.
+
+The adapter permits ES256 only: trusted EC P-256 JWKS key, matching kid, exact issuer,
+authenticated audience/role, canonical nonzero subject/session UUIDs and boolean
+`is_anonymous=false`. It rejects HS256 without fallback, API/service-role profiles,
+unsupported algorithms and malformed credentials. Exp/iat must be nonnegative integer
+timestamps, exp must exceed iat, lifetime must not exceed 3600 seconds. Future iat,
+optional nbf and expiration use 30 seconds of clock skew; no extra lifetime tolerance.
+Old sessions must refresh or reauthenticate for new ES256 tokens. Local verification
+does not establish real-time session existence or immediate logout revocation.
+
+JWKS fetch uses only the configured HTTPS URL, no redirects or token-supplied URLs,
+5-second network timeout and a 6-second async wait bound, 64 KiB maximum response,
+1–16 keys, 300-second cache and at most one refresh attempt per adapter per 30 seconds.
+A lazily created dedicated executor has one worker per verifier. The actual fetch
+future remains tracked until fetching and validation finish; caller timeout or
+cancellation never cancels or forgets shared work. Even after the refresh throttle
+expires, no replacement fetch starts while that work is outstanding. Concurrent
+callers coalesce around a shielded shared future. The state lock is never held during
+network I/O; valid cached-key requests take a fast path without waiting for refresh.
+Validated completion publishes the cache atomically on the application event loop,
+including when all original callers have departed. Failure never extends cached
+trust. Still-valid cached keys remain usable during outages; expired or absent keys
+deny. App shutdown closes the verifier, denies new work, clears cached trust and
+shuts down its executor without blocking the event loop. Late results cannot publish
+after close. Blocking stdlib networking cannot forcibly terminate a stalled worker;
+it remains tracked and capped at one until it finishes, and can delay interpreter
+exit. Cache is app-local; identity/scopes remain request-local. No credential/claims/
+exception details are logged.
+
+`PermissionService.authorize(scope, action)` rechecks active membership and scoped
+Project ownership before reading the persisted role. Member actions are Organization
+read, Project list/create/read/update and own Membership read. Owner additionally
+permits Organization name update and Project archive/deactivate. Project read/update/
+archive require ProjectScope. Own Membership means the scope's user only; future
+read APIs must use that identifier, never an arbitrary requested user. Unknown roles,
+unknown actions and deferred administration/destruction/billing/ownership actions deny.
+Scopes and action names do not authorize public endpoints: only health routes exist.
+No write workflow, Step 7 role/context/RLS implementation or schema change is included.
 
 ## Repository safety
 

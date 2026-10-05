@@ -118,3 +118,23 @@ and CONTEXT section 67, subject to the following compliance policy:
    LGPL or CC-BY by this decision.
 
 No later-gate dependency is approved by this document.
+
+## Step 6 authentication dependencies
+
+| Component | Exact version | License | Purpose |
+| --- | --- | --- | --- |
+| PyJWT[crypto] | 2.15.1 | MIT | Maintained JWT/ES256 verification |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | EC P-256 cryptographic primitives |
+| cffi | 2.1.1 | MIT-0 | CPython native interface required by cryptography |
+| pycparser | 3.0 | BSD-3-Clause | cffi dependency |
+
+Current PyPI release metadata and installed wheel metadata/license files were
+inspected before validation. Python 3.12 runtime requirements resolve to these
+four additions only; all versions are pinned in requirements.lock. No Supabase SDK
+or HTTP client dependency is added; JWKS retrieval uses the standard library.
+Preserve supplied license/copyright notices. Native cryptography wheels also bundle
+OpenSSL (the installed Windows wheel reports 4.0.3, Apache-2.0); cffi binary
+distributions can include libffi (MIT). Their upstream license texts were reviewed. Retain
+native-component notices for any future distribution and repeat the existing
+distribution compliance review before customer-possession software is shipped.
+No shared signing secret, service-role credential or private signing key is needed.

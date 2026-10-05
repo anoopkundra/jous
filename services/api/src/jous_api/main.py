@@ -11,6 +11,8 @@ from .database import Database
 from .identity import AccessDenied
 from .middleware import RequestBoundary
 from .observability import application_logger
+from .authentication import RejectingVerifier
+from .auth_adapters.supabase import SupabaseVerifier
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -25,6 +27,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise
     logger = application_logger(settings)
     database = Database(settings)
+    verifier = (SupabaseVerifier(settings.auth_issuer, settings.auth_audience, settings.auth_jwks_url)
+                if settings.auth_issuer else RejectingVerifier())
 
     @asynccontextmanager
     async def lifespan(app):
@@ -32,14 +36,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            await database.dispose()
-            logger.info("", extra={"event": "shutdown"})
+            try:
+                await verifier.aclose()
+            finally:
+                await database.dispose()
+                logger.info("", extra={"event": "shutdown"})
 
     application = FastAPI(title=settings.service_name, version="0.1.0", docs_url=None,
                           redoc_url=None, openapi_url=None, lifespan=lifespan)
     application.state.settings = settings
     application.state.logger = logger
     application.state.database = database
+    application.state.credential_verifier = verifier
     application.add_middleware(RequestBoundary, logger=logger)
 
     @application.exception_handler(AccessDenied)

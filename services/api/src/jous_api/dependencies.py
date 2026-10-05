@@ -1,4 +1,4 @@
-"""Non-public FastAPI access dependencies; the default trusted-principal seam rejects."""
+"""Non-public FastAPI identity, scope and central permission dependencies."""
 
 from collections.abc import AsyncIterator
 from uuid import UUID
@@ -8,12 +8,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .access import AccessService
 from .identity import AccessDenied, OrganizationScope, ProjectScope, RequestIdentity, VerifiedPrincipal
+from .permissions import PermissionService
 
 
-async def get_verified_principal() -> VerifiedPrincipal:
-    # A future trusted adapter replaces this dependency after separate approval.
-    # Never read an identity UUID, role or tenant assertion from request headers.
-    raise AccessDenied(401)
+async def get_verified_principal(request: Request) -> VerifiedPrincipal:
+    # Headers convey only an untrusted credential, never a trusted User/tenant/role.
+    values = request.headers.getlist("authorization")
+    if len(values) != 1:
+        raise AccessDenied(401)
+    value = values[0]
+    if not value.isascii() or len(value) > 8199:
+        raise AccessDenied(401)
+    parts = value.split(" ")
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1] or any(c.isspace() for c in parts[1]):
+        raise AccessDenied(401)
+    return await request.app.state.credential_verifier.verify(parts[1])
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -23,6 +32,10 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
 
 async def get_access_service(session: AsyncSession = Depends(get_session)) -> AccessService:
     return AccessService(session)
+
+
+async def get_permission_service(service: AccessService = Depends(get_access_service)) -> PermissionService:
+    return PermissionService(service)
 
 
 async def get_request_identity(

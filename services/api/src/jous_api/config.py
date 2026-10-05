@@ -22,6 +22,24 @@ class Settings(BaseModel):
     api_port: int = Field(default=8000, ge=1, le=65535)
     database_url: SecretStr | None = Field(default=None, repr=False)
     database_timeout_seconds: float = Field(default=5.0, ge=0.1, le=30, allow_inf_nan=False)
+    auth_issuer: str | None = Field(default=None, max_length=255)
+    auth_audience: str = "authenticated"
+    auth_jwks_url: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def validate_authentication(self):
+        if self.auth_issuer is None and self.auth_jwks_url is None:
+            # An unconfigured adapter rejects all credentials, including in production.
+            return self
+        if not self.auth_issuer or not self.auth_jwks_url or self.auth_audience != "authenticated":
+            raise ValueError("Incomplete authentication configuration")
+        parsed = urlsplit(self.auth_issuer)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                or parsed.query or parsed.fragment or parsed.port not in (None, 443)
+                or parsed.path != "/auth/v1"
+                or self.auth_jwks_url != self.auth_issuer + "/.well-known/jwks.json"):
+            raise ValueError("Invalid authentication configuration")
+        return self
 
     @model_validator(mode="after")
     def validate_database(self):
@@ -52,6 +70,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         "api_port": "JOUS_API_PORT",
         "database_url": "JOUS_DATABASE_URL",
         "database_timeout_seconds": "JOUS_DATABASE_TIMEOUT_SECONDS",
+        "auth_issuer": "JOUS_AUTH_ISSUER",
+        "auth_audience": "JOUS_AUTH_AUDIENCE",
+        "auth_jwks_url": "JOUS_AUTH_JWKS_URL",
     }
     values = {field: source[name] for field, name in names.items() if name in source}
     try:
