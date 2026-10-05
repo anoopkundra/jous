@@ -1,4 +1,4 @@
-# CORE.1A Steps 1–3 local development
+# CORE.1A Steps 1–4 local development
 
 Use Node 22.22.0 / npm 10.9.4 and Python 3.12.10. Python metadata currently targets
 3.12 only; widening support requires validation. Run commands from the repository
@@ -93,9 +93,11 @@ require a later bounded review; this gate does not implement streaming inference
 
 ## PostgreSQL foundation
 
-Use a dedicated local/test Jous PostgreSQL database, never production Supabase
-credentials or another application's database. No PostgreSQL service is created
-or started by this checkout. Supply a `postgresql://` or `postgres://` URL through
+Use a dedicated managed development/test Jous PostgreSQL project, never production
+credentials or another application's database. Supabase Session Pooler connectivity
+is supported. Development does not require PostgreSQL or other persistent services
+installed directly on Windows. No PostgreSQL service is created or started by
+this checkout. Supply a `postgresql://` or `postgres://` URL through
 `JOUS_DATABASE_URL`; the infrastructure selects SQLAlchemy's asyncpg dialect.
 Percent-encode URL credentials as needed. Driver URL options must be compatible
 with asyncpg (for example `ssl=require`, rather than libpq's `sslmode=require`).
@@ -112,12 +114,79 @@ An empty transaction does not connect. Sessions must not be shared across tasks.
 The unit suite uses actual empty SQLAlchemy sessions and mocked driver/probe
 boundaries; it requires neither PostgreSQL nor SQLite.
 
-For an optional real connectivity check, provision your own local PostgreSQL,
-export its URL, launch the API, and request `/health/ready`. No real database
-integration check is part of the offline suite. There are no tables or schema
-creation calls. Alembic and committed migration history will be introduced in a
-later step, using this configuration; startup must never silently mutate schema.
-Domain persistence, authorization and tenant CRUD remain subsequent work.
+For a real connectivity check, export your managed development database URL,
+launch the API, and request `/health/ready`. Ordinary unit tests stay offline.
+
+## Schema and migrations
+
+Alembic uses the same Settings and asyncpg engine as the API. There is no URL in
+`alembic.ini`, no extra driver, and no automatic environment-file loading. Export
+private configuration through your shell or trusted development launcher; never
+print it or put credentials in command arguments. New configuration variables are
+not required. PostgreSQL's default application schema/search path must be `public`.
+Migration SQL explicitly qualifies that schema.
+
+Run from the repository root:
+
+```text
+python -m alembic -c services/api/alembic.ini history
+python -m alembic -c services/api/alembic.ini heads
+python -m alembic -c services/api/alembic.ini upgrade head --sql
+python -m alembic -c services/api/alembic.ini upgrade head
+python -m alembic -c services/api/alembic.ini current
+python -m alembic -c services/api/alembic.ini check
+```
+
+Offline SQL rendering requires no credentials or network. Online commands require
+an explicitly configured dedicated Jous database and appropriate migration-role
+permissions. No model import, API import or startup runs migrations or `create_all`.
+Initial revision `0001_identity_project` creates only `users`, `organizations`,
+`organization_memberships`, and `projects` in `public`; Alembic maintains its own
+`public.alembic_version` tracking table. Revisions are frozen, reviewed definitions
+independent of current ORM models and become canonical history when committed.
+Autogeneration/check comparison is limited to the explicitly registered Jous tables;
+Supabase schemas and unrelated tables are excluded. Review every future revision.
+
+Every record has an application-generated UUID, status, and timezone-aware
+`created_at`/`updated_at`. Insert timestamps default to database `now()`. SQLAlchemy
+updates `updated_at` on ORM-generated updates; direct SQL writers must set it
+explicitly. No timestamp trigger or business workflow is installed.
+User's optional `(auth_issuer, auth_subject)` linkage must be both absent or both
+nonblank, and is unique when present. It has no foreign key to Supabase Auth.
+Organization has a required nonblank name. Membership has required organization,
+user, role and status; `(organization_id, user_id)` is unique. Role defaults to
+`member`; statuses default to `active`. These bounded nonblank strings do not
+implement RBAC, status transitions, or authorization. Project has required
+Organization ownership/name/status and optional description. Names need not be
+unique. Foreign keys use RESTRICT; no cascading deletes or soft-delete machinery.
+Project's UUID remains the neutral context and economic attribution boundary.
+
+Supabase automatic RLS was observed enabled on all four tables and Alembic's
+version table during Step 4 validation. This code neither disables RLS nor adds
+policies. The privileged migration connection can validate constraints; ordinary
+client access is not implemented or authorized. Future runtime-role/policy design
+requires its own scope and review.
+
+For a destructive migration round-trip, use only a confirmed empty, disposable,
+dedicated managed test project:
+
+```text
+python tests/validate_managed_migrations.py --target-fingerprint <verified-target-fingerprint>
+```
+
+This separate opt-in validator refuses production settings, a target mismatch or
+any existing public relations. The fingerprint is the first 16 hex characters of
+SHA-256 over `host:port/database/username`; it contains no credentials and must be
+verified against the intended project before execution. The validator upgrades,
+compares metadata and constraints, rolls back test rows, checks for unexpected
+objects/data, downgrades to base, confirms removal, and upgrades again to head.
+Managed relations/extensions are checked for changes. Downgrade removes only the
+four domain tables and their indexes; Alembic's empty version table remains at base.
+Never run this cycle on a populated/shared database. Do not use `CASCADE` or alter
+managed objects to bypass a safety failure. A failed stage stops further changes;
+inspect the current revision securely before proceeding.
+
+Authorization and tenant-scoped CRUD remain subsequent work.
 
 ## Repository safety
 

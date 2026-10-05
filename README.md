@@ -1,8 +1,8 @@
 # Jous
 
 Jous is the economic layer for AI builders. This checkout implements only
-JOUS.CORE.1A Steps 1–3: repository boundaries, configured process health, and
-PostgreSQL connectivity/session infrastructure.
+JOUS.CORE.1A Steps 1–4: repository boundaries, configured process health,
+PostgreSQL connectivity/session infrastructure, and foundational schema migrations.
 
 | Path | Responsibility |
 | --- | --- |
@@ -24,8 +24,10 @@ distinct future concepts. No mutable balance is financial authority.
 
 The API exposes `GET /health/live` for process liveness and `GET /health/ready`
 for a real, bounded PostgreSQL connectivity probe. It creates no schema and
-connects only on explicit database work/readiness requests. This shell has no
-frontend API connectivity, domain persistence, authentication, model
+connects only on explicit database work/readiness requests. Alembic owns the
+four-table identity/Organization/Project schema in managed PostgreSQL; no local
+PostgreSQL installation is required. This shell has no
+frontend API connectivity, CRUD workflows, authentication, model
 execution, routing, ledger, wallet, rewards, payments, or memory engine.
 It is not deployment-ready and does not complete CORE.1A.
 

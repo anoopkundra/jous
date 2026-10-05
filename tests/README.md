@@ -13,6 +13,12 @@ Step 3 adds PostgreSQL engine/session construction without connections, real
 empty-session commit/rollback/close lifecycle, mocked connectivity probes,
 timeout cleanup, readiness success/failure, and response/log redaction checks.
 Normal tests are offline and require neither PostgreSQL nor SQLite.
-Domain persistence, authorization, migration, CRUD, isolation, and
+Step 4 adds exact schema/column, UUID/timestamp/nullability, named relational
+constraint, neutral-boundary, deterministic offline migration SQL, revision,
+credential-safety and no-connection import checks. A separate explicitly invoked
+`validate_managed_migrations.py` checks an empty managed PostgreSQL project; it
+is not part of unittest discovery. See local-development documentation for safety
+requirements and invocation. No local PostgreSQL installation is required.
+Authorization, CRUD, isolation, and
 supplier-contract tests arrive with their corresponding implementation steps.
 Tests must never require production credentials, paid inference, or customer funds.

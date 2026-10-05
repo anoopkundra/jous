@@ -1,4 +1,4 @@
-# CORE.1A Steps 1–3 dependencies
+# CORE.1A Steps 1–4 dependencies
 
 Direct dependencies are pinned exactly. `package-lock.json` captures npm's full
 resolution and integrity hashes; `services/api/requirements.lock` captures the
@@ -21,10 +21,11 @@ verified. Preserve upstream LICENSE/NOTICE files in any later distribution.
 | Uvicorn | 0.54.0 | BSD-3-Clause | Local ASGI server; https://github.com/Kludex/uvicorn |
 | SQLAlchemy[asyncio] | 2.0.54 | MIT | Async PostgreSQL engine/session; https://github.com/sqlalchemy/sqlalchemy |
 | asyncpg | 0.31.0 | Apache-2.0 | PostgreSQL async driver; https://github.com/MagicStack/asyncpg |
+| Alembic | 1.20.0 | MIT | Canonical schema migrations; https://github.com/sqlalchemy/alembic |
 | setuptools | 84.0.0 | MIT | Python package build/editable installs; https://github.com/pypa/setuptools |
 
 Foundation tests use standard-library unittest. Step 3 adds PostgreSQL connectivity
-only, with no schema or migration framework. No supplier, gateway, memory, payment,
+only; Step 4 adds declarative models and Alembic schema history. No supplier, gateway, memory, payment,
 routing, or observability platform has been introduced.
 
 ## Python transitive components
@@ -38,6 +39,8 @@ routing, or observability platform has been introduced.
 | greenlet | 3.5.6 | MIT AND PSF-2.0 |
 | h11 | 0.16.0 | MIT |
 | idna | 3.20 | BSD-3-Clause |
+| Mako | 1.4.3 | MIT |
+| MarkupSafe | 3.0.4 | BSD-3-Clause |
 | opentelemetry-api | 1.45.0 | Apache-2.0 |
 | pydantic_core | 2.46.5 | MIT |
 | starlette | 1.7.0 | BSD-3-Clause |
@@ -51,6 +54,9 @@ The SQLAlchemy asyncio extra requires greenlet on all supported platforms;
 its exact version is pinned in the Python lock. Step 3 package metadata and
 installed license files were inspected. These licenses are permissive; preserve
 their license/copyright records. No Psycopg or SQLite dependency is introduced.
+Step 4 adds only Alembic and its Mako/MarkupSafe transitive dependencies. Exact
+installed metadata and license files were inspected; all are permissive.
+Existing SQLAlchemy/asyncpg versions are retained, with no additional driver.
 
 ## Frontend transitive components
 
