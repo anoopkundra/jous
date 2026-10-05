@@ -61,6 +61,131 @@ helpers without permanent SET capability; verify schema ownership before downgra
 Helper SELECT policies are role-specific and read-only. Ordinary GUCs are not a
 cryptographic boundary against someone executing arbitrary SQL with runtime login.
 
+## Atomic Step 7 operator runner (not executed)
+
+`apply_step7_atomic.py` is operator-only, never an application startup migration.
+Import and `--help` do not connect. Use the trusted reviewed CPython virtual environment
+with isolated mode and disabled bytecode writes:
+
+```powershell
+.\.venv\Scripts\python.exe -I -B services/api/infrastructure/apply_step7_atomic.py --help
+```
+
+For a separately authorized mutation, retain `-I -B` and explicitly supply the
+confirmation flag, approved execution SHA and approved CA path. Mutation rejects a
+non-isolated interpreter. The first bootstrap imports only built-in sys and frozen
+os/path, removes repository source/CWD search paths before shadowable standard-library
+imports, and defers installed SQLAlchemy/Alembic imports until after the identity gate.
+The venv/interpreter, installed dependencies and their startup hooks are trusted operator
+prerequisites: -I ignores PYTHONPATH and user site, but does not disable trusted venv
+site .pth hooks. sitecustomize, interpreter replacement and any code executed before the
+file's first instruction cannot be attested retroactively by this runner. Use a controlled
+venv, no unreviewed startup hooks, and exclusive local administrative maintenance.
+
+Infrastructure, migrations and src are audited for untracked executable/importable files,
+symlinks and caches before credential access. No caches are silently deleted: STOP and
+have the operator remove them separately before an authorized run. -B prevents new cache
+writes; it alone does not prevent cache reads. Repository paths stay off sys.path; the
+verified Jous package uses a source-only importer. Contract inspection and operator-scoped
+Alembic loading compile verified source bytes directly, bypassing cached-code loaders.
+Alembic repeats the Git/import-surface gate immediately before loading migrations; source
+bytes are rechecked on every repository module load. Thus a later .pyc cannot substitute
+for reviewed source even after that gate. No alternate .pyc migration path is accepted.
+These controls apply to repository code, not trusted installed dependency bytecode.
+
+A fresh Jous application namespace is mandatory. Before repository verification,
+before installing the verified-source importer, after dependency loading but before
+credential access, and immediately before Alembic, the runner rejects every existing
+sys.modules name equal to jous_api or beginning with jous_api. This includes modules
+from the venv or any external origin; installed origin is not source attestation.
+Names such as jous_api2 are unrelated. A contaminated interpreter stops; no modules
+are silently purged. Start again in a fresh isolated interpreter. Only subsequent
+intentional env.py imports may populate the namespace through the verified-source
+loader. The offline Alembic regression resolves the actual 0002 revision callback
+while retaining a fake-DBAPI caller transaction and forbidding cached repository
+loaders; it does not execute migration SQL or connect to PostgreSQL.
+
+Managed execution requires the exact
+`--confirm-managed-mutation` flag, an explicit `--ca-file`, and only
+`JOUS_MIGRATION_DATABASE_URL`; there is no runtime-credential fallback or .env edit.
+Execution requires `--approved-execution-sha <40-lowercase-hex-sha>` with no default.
+The founder supplies that immutable commit identity independently after review/commit;
+never derive approval from the current HEAD. HEAD and origin/main must both match it,
+and the tracked tree must be clean. Git blob contents are compared with working files
+for the runner, all migrations, Alembic configuration, runtime_roles.sql, all jous_api
+source, backend pyproject.toml and requirements.lock. Unexpected files in audited source
+trees fail closed, including every __pycache__ directory and .pyc/.pyo file; only checkout CRLF/LF
+conversion is tolerated. Protected documentation artifacts may remain untracked.
+Migration 0002 is independently pinned to reviewed Git blob
+`0e2cf9e7cefcb40110359eded43e48a3e74f67d7`. Its pin must undergo code review if that
+migration intentionally changes. The external execution commit avoids embedding a
+runner commit's own SHA in its source. Current uncommitted state cannot execute.
+
+The runner accepts exactly one PEM certificate, with only whitespace outside its block.
+Bundles and leading/trailing non-whitespace are rejected. Base64 decoding is strict and
+canonical: excess data after padding, extra padding and malformed payloads fail closed. Its DER fingerprint must match
+the approved CA; only those same verified DER bytes are loaded into a fresh TLS-client
+context with no system-root fallback. CERT_REQUIRED and hostname verification remain
+mandatory. URL routing/TLS query overrides are rejected before engine creation.
+The runner requires the approved CA fingerprint, certificate and hostname verification,
+the Jous project-qualified admin identity, database postgres and Session Pooler port
+5432. It uses NullPool, one held connection and one caller-owned outer transaction.
+A transaction advisory lock coordinates copies of this runner only; it cannot exclude
+unrelated administrators. Schedule exclusive administrative maintenance separately.
+Baseline catalog gates must all pass before the first membership grant.
+
+Preserve the automatic bootstrap-superuser membership unchanged. Add only a temporary
+postgres-granted membership with ADMIN false, INHERIT false and SET true. Verify that
+exact additional row and effective authority, pass the same synchronous Connection
+to corrected Alembic 0002, and verify security catalogs inside the transaction. Remove
+only the postgres-granted row with GRANTED BY postgres RESTRICT. Require complete
+baseline membership restoration, SET false and inherited authority false, then rerun
+security assertions. Only afterward perform the single final commit.
+
+Policy names, commands, roles and modes are exact. USING/WITH CHECK clauses are
+compared locally using an allow-listed structural recognizer for the four pinned 0002
+guards. It retains function identity, arguments, boolean structure, tenant predicates
+and meaningful casts. Only bounded PostgreSQL deparser spelling equivalences are
+accepted: parentheses/whitespace, catalog-qualified builtins, text coercions on known
+text operands, CAST-to-uuid spelling and literal IN/ANY spelling. Unknown syntax fails
+closed. No catalog policy text is submitted for SQL execution or EXPLAIN planning;
+there is no planning fallback. Offline fixtures are not live deparser/isolation proof:
+an unfamiliar benign managed representation must STOP for review, never be accepted by
+loosening the comparison during an operator run.
+
+Helper identity includes exact schema/name/type sequence, parameter names/order,
+argument modes/defaults, return type, language, owner, SECURITY DEFINER, volatility,
+parallel mode, fixed search_path and reviewed textual body. Alternate SQL-body storage
+is rejected. Helper ACLs and effective EXECUTE/grant-option state are verified.
+
+Privilege audits exclude only exact pg_catalog/information_schema/pg_toast and numeric
+PostgreSQL pg_temp_/pg_toast_temp_ namespaces. User schemas such as pgx/pga/pg1 are
+included in schema CREATE, relation, sequence and routine audits. All non-system
+pg_proc kinds are audited for both Jous roles; only the two exact helper signatures
+are allowed after migration, with implicit owner grant authority only for their owner.
+No other user-routine EXECUTE or grant option is silently accepted, including PUBLIC
+access. Default ACL audits explicitly include PUBLIC/OID 0 and both Jous roles for all
+catalog object classes; unexpected future-object grants fail closed. Existing managed
+routine/default privileges may therefore require separate reviewed allowance decisions;
+this runner does not alter them or whitelist public-schema routines.
+
+Separate follow-up security debt: production jous_api/database.py still uses the unsafe
+namespace pattern NOT LIKE 'pg_%', whose underscore is a wildcard. This runner fixes
+its own audit only. Production remediation needs separate authorization/review and
+must not be treated as resolved by this patch. This debt does not itself block runner
+commit or intrinsically block migration 0002; it DOES block later jous_runtime activation. These catalog checks are not proof of
+actual runtime-login isolation; live validation remains separately authorized.
+
+Pre-commit failure rolls back the outer transaction. Cancellation drains rollback and
+connection cleanup. Cleanup retains the public asyncpg driver reference and verifies
+physical closure, with terminate fallback, rather than trusting swallowed adapter errors.
+Rollback/cleanup uncertainty is reported explicitly. A commit error is UNKNOWN, never
+automatically retried: reconcile through separately authorized read-only inspection.
+An acknowledged commit followed by cleanup failure is reported as committed with
+cleanup unconfirmed, not as rolled back. Separate founder authorization is still needed
+for post-commit read-only reconciliation, runtime activation and managed behavior tests.
+The full managed mutation validator is not invoked by this runner.
+
 ## Validation and recovery
 
 Use `tests/validate_managed_runtime_security.py --help` offline for options. Require
