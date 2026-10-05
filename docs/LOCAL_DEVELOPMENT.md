@@ -304,3 +304,59 @@ No write workflow, Step 7 role/context/RLS implementation or schema change is in
 Existing untracked backup/review/website artifacts are outside Step 1. Preserve
 them. Review explicit paths before any future staging; never use broad staging.
 No CI is introduced in this step; full gate CI follows the verification suite.
+
+
+## Step 7 offline security foundation (managed execution pending)
+
+Runtime uses only `JOUS_DATABASE_URL` for the restricted `jous_runtime` login.
+Alembic/admin tools require `JOUS_MIGRATION_DATABASE_URL`; neither falls back to the
+other. Normal settings never ingest the admin secret. Configuration/engine imports
+stay lazy; a configured API startup now explicitly validates runtime safety, and
+readiness uses only that runtime connection. Without a DB the development/test
+health-only shell starts, liveness succeeds and readiness returns 503.
+
+Step 7 code and revision `0002_runtime_rls` are offline artifacts, not completed
+managed infrastructure. Follow `services/api/infrastructure/README.md`; founder
+review is mandatory before the first managed mutation. No local PostgreSQL is
+required. Never run the retired Step 4 full downgrade cycle on the Step 7 database.
+
+Protected transactions verify credential before checkout, validate runtime role and
+clean baseline, initialize local `jous.user_id`/`jous.organization_id`, resolve exact
+active identity, then validate membership before binding one Organization. Context
+and sessions are request-local; uncertain connections are invalidated. No Project
+context, onboarding or CRUD exists. Two privileged helpers read only Users and
+Organization status. Membership/role decisions use ordinary RLS, and product actions
+remain centrally authorized. Ordinary GUCs cannot prevent impersonation by an
+attacker executing arbitrary SQL with a stolen runtime DB credential.
+
+Offline inspection only (no credentials/connections):
+
+```text
+python -m unittest discover -s tests -v
+python -m alembic -c services/api/alembic.ini heads
+python -m alembic -c services/api/alembic.ini history
+python tests/validate_managed_runtime_security.py --help
+```
+
+Only after managed preflight, founder execution approval, role bootstrap, migration
+and secure runtime activation, explicitly invoke:
+
+```text
+python tests/validate_managed_runtime_security.py --opt-in-managed-validation --target-fingerprint <approved-fingerprint> --manifest <new-cleanup-manifest.json>
+```
+
+The fingerprint is SHA-256 of host:port/database/project-reference truncated to 16 hex characters,
+excluding username/password. The approved public project reference is also checked
+against the direct host or pooler username; a regional pooler host alone does not
+identify a project. The validator also compares server identity. Use a new
+manifest path; it refuses overwrite and records UUIDs/baseline before writes.
+Temporary fixtures are committed administratively, runtime mutations rolled back,
+and exact marked rows cleaned in reverse order. An interrupted run requires:
+
+```text
+python tests/validate_managed_runtime_security.py --opt-in-managed-validation --target-fingerprint <approved-fingerprint> --manifest <existing-cleanup-manifest.json> --cleanup-only
+```
+
+Cleanup-only needs the admin configuration, not a functioning runtime credential.
+Retain manifest until baseline/revision verification succeeds. No unresolved cleanup
+or skipped managed isolation evidence can pass the PUBLIC CRUD SECURITY GATE.

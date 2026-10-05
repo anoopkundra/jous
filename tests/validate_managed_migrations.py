@@ -19,7 +19,7 @@ from sqlalchemy import PrimaryKeyConstraint, UniqueConstraint, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
-from jous_api.config import load_settings
+from jous_api.config import load_migration_settings
 from jous_api.database import Database
 from jous_api.models import Base
 
@@ -61,7 +61,7 @@ async def migrate(engine, action):
             config = Config(str(ROOT / "services/api/alembic.ini"))
             config.attributes["connection"] = sync_connection
             if action == "upgrade":
-                command.upgrade(config, "head")
+                command.upgrade(config, REVISION)
             else:
                 command.downgrade(config, "base")
         await connection.run_sync(run)
@@ -136,7 +136,8 @@ async def validate_constraints(engine):
 
 
 async def main(expected_fingerprint):
-    settings = load_settings()
+    raise SafetyStop("Legacy Step 4 cycle retired; use reviewed Step 7 validation")
+    settings = load_migration_settings()
     require(settings.environment != "production", "Production configuration refused")
     require(settings.database_url is not None, "JOUS_DATABASE_URL is required")
     url = make_url(settings.database_url.get_secret_value())

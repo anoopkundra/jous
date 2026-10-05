@@ -38,3 +38,17 @@ bounded release/cleanup. They prove one real fetch survives caller timeout and
 cancellation without replacement, concurrent random-key requests coalesce, valid
 cached tokens do not wait for unrelated refreshes, and close rejects late results.
 Tests must never require production credentials, paid inference, or customer funds.
+
+
+Step 7 adds offline context sequencing, exact helper resolution, switching/mismatch
+rejection, transaction/commit/cancellation cleanup, runtime/admin separation,
+credential-safe guards and deterministic migration security contracts. These tests
+DO NOT prove PostgreSQL policy execution. Imports of the managed validator do not
+connect. Existing Step 4/5 managed scripts are retired and refuse execution to prevent
+unsafe legacy downgrade/access behavior. Use the explicit Step 7 validator only
+after the founder-managed execution gate; see infrastructure/local development docs.
+
+The locked environment currently uses unittest; pytest is not a required dependency.
+Do not install a test framework just to rerun the existing suite. Remove database
+credentials from the shell when performing offline checks. Actual runtime login,
+policy recursion, effective ACLs and pool/cancellation behavior remain managed tests.

@@ -385,7 +385,7 @@ class AuthenticationTests(unittest.IsolatedAsyncioTestCase):
         from sqlalchemy.dialects import postgresql
         app = create_app(Settings(environment="test"))
         app.state.credential_verifier = self.verifier
-        session = AsyncMock()
+        session = __import__("test_access_foundation").context_session()
         session.scalar.return_value = None
         app.dependency_overrides[get_access_service] = lambda: AccessService(session)
 
@@ -398,7 +398,7 @@ class AuthenticationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start["status"], 401)
         self.assertEqual(body["error"]["code"], "identity_required")
         sql = session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())
-        self.assertEqual(set(sql.params.values()), {ISSUER, self.claims["sub"], "active"})
+        self.assertEqual(session.scalar.call_args.args[1], {"issuer": ISSUER, "subject": self.claims["sub"]})
         self.assertNotIn("email", str(sql))
         session.add.assert_not_called()
         session.execute.assert_not_called()

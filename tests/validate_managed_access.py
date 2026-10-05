@@ -10,7 +10,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jous_api.access import AccessService
-from jous_api.config import load_settings
+from jous_api.config import load_migration_settings
 from jous_api.database import Database
 from jous_api.identity import AccessDenied, OrganizationScope, RequestIdentity, VerifiedPrincipal
 from jous_api.models import Organization, OrganizationMembership, Project, User
@@ -35,7 +35,9 @@ async def state(connection):
 
 
 async def main(expected_fingerprint):
-    settings = load_settings()
+    raise RuntimeError("Legacy Step 5 validation retired; use validate_managed_runtime_security.py")
+
+    settings = load_migration_settings()
     require(settings.environment != "production", "Production target refused")
     require(settings.database_url is not None, "Database configuration required")
     url = make_url(settings.database_url.get_secret_value())

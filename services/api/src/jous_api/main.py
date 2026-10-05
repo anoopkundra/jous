@@ -34,6 +34,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app):
         logger.info("", extra={"event": "startup"})
         try:
+            if database.engine is not None:
+                await database.check()
             yield
         finally:
             try:

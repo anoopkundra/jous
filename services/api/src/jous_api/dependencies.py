@@ -25,8 +25,10 @@ async def get_verified_principal(request: Request) -> VerifiedPrincipal:
     return await request.app.state.credential_verifier.verify(parts[1])
 
 
-async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
-    async with request.app.state.database.transaction() as session:
+async def get_session(request: Request,
+                      principal: VerifiedPrincipal = Depends(get_verified_principal)) -> AsyncIterator[AsyncSession]:
+    # Dependency ordering verifies the credential before checkout or helper access.
+    async with request.app.state.database.scoped_transaction() as session:
         yield session
 
 

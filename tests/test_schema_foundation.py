@@ -93,10 +93,10 @@ class SchemaTests(unittest.TestCase):
 class MigrationTests(unittest.TestCase):
     def test_single_initial_revision_has_upgrade_and_downgrade(self):
         script = ScriptDirectory.from_config(Config(str(INI)))
-        self.assertEqual(script.get_heads(), [REVISION])
+        self.assertEqual(script.get_heads(), ["0002_runtime_rls"])
         revisions = list(script.walk_revisions())
-        self.assertEqual(len(revisions), 1)
-        self.assertIsNone(revisions[0].down_revision)
+        self.assertEqual(len(revisions), 2)
+        self.assertIsNone(revisions[-1].down_revision)
         self.assertTrue(callable(revisions[0].module.upgrade))
         self.assertTrue(callable(revisions[0].module.downgrade))
 
@@ -105,7 +105,7 @@ class MigrationTests(unittest.TestCase):
             output = io.StringIO()
             config = Config(str(INI), output_buffer=output)
             if upgrade:
-                command.upgrade(config, "head", sql=True)
+                command.upgrade(config, REVISION, sql=True)
             else:
                 command.downgrade(config, REVISION + ":base", sql=True)
             return output.getvalue()

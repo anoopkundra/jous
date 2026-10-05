@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy.dialects import postgresql
 from jous_api.access import AccessService
+from test_access_foundation import context_session
 from jous_api.identity import AccessDenied, OrganizationScope, ProjectScope
 from jous_api.permissions import Action, PermissionService, permits
 
@@ -28,8 +29,10 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_persistence_role_and_scoped_project_revalidation(self):
         user, organization, project = uuid4(), uuid4(), uuid4()
         scope = ProjectScope(user, organization, project)
-        session = AsyncMock()
+        session = context_session()
         session.scalar.side_effect = [organization, project, "owner"]
+        session.info["jous_context"].user_id = scope.user_id
+        session.info["jous_context"].organization_id = scope.organization_id
         service = PermissionService(AccessService(session))
         self.assertEqual(await service.authorize(scope, Action.ARCHIVE_PROJECT), scope)
         statement = session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())
@@ -52,18 +55,22 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
         access.organization.assert_not_called()
 
     async def test_own_membership_is_bound_to_scope_user(self):
-        session = AsyncMock()
+        session = context_session()
         user, organization = uuid4(), uuid4()
         session.scalar.side_effect = [organization, "member"]
+        session.info["jous_context"].user_id = user
+        session.info["jous_context"].organization_id = organization
         await PermissionService(AccessService(session)).authorize(
             OrganizationScope(user, organization), Action.READ_OWN_MEMBERSHIP)
         sql = session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())
         self.assertIn(user, sql.params.values())
 
     async def test_inactive_or_cross_tenant_relationship_denies_every_action(self):
-        session = AsyncMock()
+        session = context_session()
         session.scalar.return_value = None
         scope = ProjectScope(uuid4(), uuid4(), uuid4())
+        session.info["jous_context"].user_id = scope.user_id
+        session.info["jous_context"].organization_id = scope.organization_id
         service = PermissionService(AccessService(session))
         for action in Action:
             with self.assertRaises(AccessDenied):

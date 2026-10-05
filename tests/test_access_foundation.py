@@ -24,6 +24,19 @@ from jous_api.observability import request_id
 from test_process_foundation import request
 
 
+def context_session(user=None, organization=None):
+    from jous_api.database_context import DatabaseContext
+    session = AsyncMock()
+    session.info = {}
+    session.in_transaction = lambda: True
+    session.in_nested_transaction = lambda: False
+    context = DatabaseContext(session)
+    context.initialized = True
+    context.user_id, context.organization_id = user, organization
+    session.info['jous_context'] = context
+    return session
+
+
 class IdentityTests(unittest.TestCase):
     def test_minimal_immutable_values(self):
         user, organization, project = uuid4(), uuid4(), uuid4()
@@ -49,28 +62,33 @@ class IdentityTests(unittest.TestCase):
 
 class AccessQueryTests(unittest.IsolatedAsyncioTestCase):
     async def test_identity_exact_match_and_active_user_predicates(self):
-        session = AsyncMock()
+        session = context_session()
         user_id = uuid4()
         session.scalar.return_value = user_id
         service = AccessService(session)
         self.assertEqual(await service.resolve(VerifiedPrincipal("Issuer/", "Subject")), RequestIdentity(user_id))
         statement = session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())
-        self.assertEqual(set(statement.params.values()), {"Issuer/", "Subject", "active"})
-        for predicate in ("users.auth_issuer =", "users.auth_subject =", "users.status ="):
+        self.assertEqual(session.scalar.call_args.args[1], {"issuer": "Issuer/", "subject": "Subject"})
+        for predicate in ("jous_security.resolve_user",):
             self.assertIn(predicate, str(statement))
         session.scalar.return_value = None
+        service.context.clear()
+        service.context.initialized = True
         with self.assertRaises(AccessDenied) as failure:
             await service.resolve(VerifiedPrincipal("unknown", "unknown"))
         self.assertEqual(failure.exception.status_code, 401)
+        service.context.user_id = user_id
         with self.assertRaises(AccessDenied):
             await service.active_user(RequestIdentity(user_id))
         session.scalar.return_value = user_id
         self.assertEqual(await service.active_user(RequestIdentity(user_id)), RequestIdentity(user_id))
 
     async def test_organization_and_project_predicates_fail_closed(self):
-        session = AsyncMock()
+        session = context_session()
         session.scalar.return_value = None
         user, organization, project = uuid4(), uuid4(), uuid4()
+        session.info["jous_context"].user_id = user
+        session.info["jous_context"].organization_id = organization
         service = AccessService(session)
         with self.assertRaises(AccessDenied):
             await service.organization(RequestIdentity(user), organization)
@@ -105,7 +123,7 @@ class DependencyTests(unittest.IsolatedAsyncioTestCase):
 
         class Database:
             @asynccontextmanager
-            async def transaction(self):
+            async def scoped_transaction(self):
                 session = object()
                 try:
                     yield session
@@ -123,7 +141,7 @@ class DependencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_external_identity_error_omits_principal(self):
         app, output = self.application()
-        session = AsyncMock()
+        session = context_session()
         session.scalar.return_value = None
         app.dependency_overrides[get_verified_principal] = lambda: VerifiedPrincipal("private-issuer", "private-subject")
         app.dependency_overrides[get_access_service] = lambda: AccessService(session)

@@ -82,3 +82,18 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
                          if e["loc"] else "JOUS_DATABASE_URL"
                          for e in exc.errors(include_input=False, include_context=False)})
         raise ConfigurationError("Invalid Jous configuration: " + ", ".join(fields)) from None
+
+
+def load_migration_settings(environ: Mapping[str, str] | None = None) -> Settings:
+    """Admin tooling only. Runtime settings never ingest this secret; no fallback."""
+    source = os.environ if environ is None else environ
+    value = source.get("JOUS_MIGRATION_DATABASE_URL")
+    if not value:
+        raise ConfigurationError("Migrations require JOUS_MIGRATION_DATABASE_URL")
+    # Reuse PostgreSQL validation without ingesting runtime/authentication settings.
+    try:
+        return load_settings({"JOUS_DATABASE_URL": value,
+            "JOUS_ENVIRONMENT": source.get("JOUS_ENVIRONMENT", "development"),
+            "JOUS_DATABASE_TIMEOUT_SECONDS": source.get("JOUS_DATABASE_TIMEOUT_SECONDS", "5")})
+    except ConfigurationError:
+        raise ConfigurationError("Invalid migration configuration") from None

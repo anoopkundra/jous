@@ -4,7 +4,7 @@ import asyncio
 
 from alembic import context
 
-from jous_api.config import ConfigurationError, load_settings
+from jous_api.config import ConfigurationError, load_migration_settings
 from jous_api.database import Database
 from jous_api.models import Base
 
@@ -27,9 +27,9 @@ def run_migrations(connection):
 
 
 async def run_online():
-    database = Database(load_settings())
+    database = Database(load_migration_settings())
     if database.engine is None:
-        raise ConfigurationError("Migrations require JOUS_DATABASE_URL")
+        raise ConfigurationError("Migrations require JOUS_MIGRATION_DATABASE_URL")
     try:
         async with database.engine.connect() as connection:
             await connection.run_sync(run_migrations)

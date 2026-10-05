@@ -63,14 +63,17 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         engine = MagicMock()
         context = engine.connect.return_value
         connection = context.__aenter__.return_value
+        connection.sync_connection = MagicMock()
         connection.scalar = AsyncMock(return_value=1)
         database.engine = engine
-        await database.check()
+        with patch("jous_api.database.validate_runtime", new_callable=AsyncMock):
+            await database.check()
         self.assertEqual(str(connection.scalar.call_args.args[0]), "SELECT 1")
         context.__aexit__.assert_awaited_once()
         connection.scalar.return_value = 0
-        with self.assertRaises(DatabaseUnavailable):
-            await database.check()
+        with patch("jous_api.database.validate_runtime", new_callable=AsyncMock):
+            with self.assertRaises(DatabaseUnavailable):
+                await database.check()
 
     async def test_probe_timeout_releases_connection(self):
         database = Database(Settings(environment="test", database_timeout_seconds=0.1))
@@ -80,6 +83,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         async def hang(statement):
             await asyncio.Event().wait()
 
+        context.__aenter__.return_value.sync_connection = MagicMock()
         context.__aenter__.return_value.scalar = AsyncMock(side_effect=hang)
         database.engine = engine
         with self.assertRaises(TimeoutError):
@@ -89,7 +93,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_application_lifespan_disposes_without_connecting(self):
         with patch("asyncpg.connect", new_callable=AsyncMock) as connect:
             app = create_app(Settings(environment="test", database_url=DATABASE_URL))
-            with patch.object(app.state.database, "dispose", wraps=app.state.database.dispose) as dispose:
+            with patch.object(app.state.database, "dispose", wraps=app.state.database.dispose) as dispose, patch.object(app.state.database, "check", new_callable=AsyncMock):
                 async with app.router.lifespan_context(app):
                     connect.assert_not_called()
                 dispose.assert_awaited_once()
