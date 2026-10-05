@@ -11,4 +11,5 @@ class ApplicationFoundationTests(unittest.IsolatedAsyncioTestCase):
         app = create_app(Settings(environment="test", service_name="Jous_API"))
         async with app.router.lifespan_context(app):
             self.assertEqual(app.title, "Jous_API")
-            self.assertEqual([route.path for route in app.routes], ["/health/live"])
+            self.assertEqual([route.path for route in app.routes],
+                             ["/health/live", "/health/ready"])

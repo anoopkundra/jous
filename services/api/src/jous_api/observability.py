@@ -18,7 +18,8 @@ class JsonFormatter(logging.Formatter):
     def format(self, record):
         # Never serialize arbitrary messages, arguments, exception text or extras.
         event = getattr(record, "event", "application_event")
-        if event not in {"startup", "shutdown", "request_complete", "request_failed"}:
+        if event not in {"startup", "shutdown", "request_complete", "request_failed",
+                         "database_unavailable"}:
             event = "application_event"
         result = {
             "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),

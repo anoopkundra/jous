@@ -1,4 +1,4 @@
-# CORE.1A Step 1 dependencies
+# CORE.1A Steps 1–3 dependencies
 
 Direct dependencies are pinned exactly. `package-lock.json` captures npm's full
 resolution and integrity hashes; `services/api/requirements.lock` captures the
@@ -19,10 +19,13 @@ verified. Preserve upstream LICENSE/NOTICE files in any later distribution.
 | FastAPI | 0.142.2 | MIT | API shell; https://github.com/fastapi/fastapi |
 | Pydantic | 2.13.5 | MIT | Required validation foundation; https://github.com/pydantic/pydantic |
 | Uvicorn | 0.54.0 | BSD-3-Clause | Local ASGI server; https://github.com/Kludex/uvicorn |
+| SQLAlchemy[asyncio] | 2.0.54 | MIT | Async PostgreSQL engine/session; https://github.com/sqlalchemy/sqlalchemy |
+| asyncpg | 0.31.0 | Apache-2.0 | PostgreSQL async driver; https://github.com/MagicStack/asyncpg |
 | setuptools | 84.0.0 | MIT | Python package build/editable installs; https://github.com/pypa/setuptools |
 
-Foundation tests use standard-library unittest. No database, supplier, gateway,
-memory, payment, routing, or observability platform has been introduced.
+Foundation tests use standard-library unittest. Step 3 adds PostgreSQL connectivity
+only, with no schema or migration framework. No supplier, gateway, memory, payment,
+routing, or observability platform has been introduced.
 
 ## Python transitive components
 
@@ -32,6 +35,7 @@ memory, payment, routing, or observability platform has been introduced.
 | annotated-types | 0.8.0 | MIT |
 | anyio | 4.15.1 | MIT |
 | click | 8.5.0 | BSD-3-Clause |
+| greenlet | 3.5.6 | MIT AND PSF-2.0 |
 | h11 | 0.16.0 | MIT |
 | idna | 3.20 | BSD-3-Clause |
 | opentelemetry-api | 1.45.0 | Apache-2.0 |
@@ -43,6 +47,10 @@ memory, payment, routing, or observability platform has been introduced.
 OpenTelemetry API is required transitively by this FastAPI release. There is no
 SDK, exporter, collector, telemetry configuration, or application instrumentation.
 PSF-2.0 is a permissive license; retain the supplied license and notices.
+The SQLAlchemy asyncio extra requires greenlet on all supported platforms;
+its exact version is pinned in the Python lock. Step 3 package metadata and
+installed license files were inspected. These licenses are permissive; preserve
+their license/copyright records. No Psycopg or SQLite dependency is introduced.
 
 ## Frontend transitive components
 

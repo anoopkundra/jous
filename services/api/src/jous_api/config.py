@@ -21,6 +21,7 @@ class Settings(BaseModel):
     api_host: str = Field(default="127.0.0.1", pattern=r"^[A-Za-z0-9.:-]{1,253}$")
     api_port: int = Field(default=8000, ge=1, le=65535)
     database_url: SecretStr | None = Field(default=None, repr=False)
+    database_timeout_seconds: float = Field(default=5.0, ge=0.1, le=30, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_database(self):
@@ -50,6 +51,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         "api_host": "JOUS_API_HOST",
         "api_port": "JOUS_API_PORT",
         "database_url": "JOUS_DATABASE_URL",
+        "database_timeout_seconds": "JOUS_DATABASE_TIMEOUT_SECONDS",
     }
     values = {field: source[name] for field, name in names.items() if name in source}
     try:

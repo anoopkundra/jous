@@ -1,4 +1,4 @@
-# CORE.1A Steps 1–2 local development
+# CORE.1A Steps 1–3 local development
 
 Use Node 22.22.0 / npm 10.9.4 and Python 3.12.10. Python metadata currently targets
 3.12 only; widening support requires validation. Run commands from the repository
@@ -36,7 +36,12 @@ python -m jous_api.main
 ```
 
 The API exposes `GET /health/live`, returning `{"status":"alive"}`. It does not
-claim database, supplier, or inference readiness. No readiness endpoint exists.
+claim database, supplier, or inference readiness. `GET /health/ready` separately
+checks PostgreSQL connectivity with `SELECT 1`: HTTP 200 reports `ready` and
+`database: reachable`; HTTP 503 reports `not_ready` and `database: unavailable`.
+Both readiness responses include `request_id`, matching `X-Request-ID`.
+Missing configuration, connectivity failure, or timeout returns the same generic
+503. It does not verify migrations, domain tables, suppliers, or inference.
 The module launcher applies `JOUS_API_HOST`/`JOUS_API_PORT` and disables Uvicorn
 access logs. If using Uvicorn's CLI instead, pass host/port explicitly and use
 `--no-access-log`; CLI bind options are independent of Jous settings.
@@ -55,9 +60,11 @@ an active environment. No secrets are required for local process-health checks.
 | JOUS_API_HOST | 127.0.0.1; bind hostname/IP |
 | JOUS_API_PORT | 8000; integer 1–65535 |
 | JOUS_DATABASE_URL | optional locally; required in production, PostgreSQL URL with host/database |
+| JOUS_DATABASE_TIMEOUT_SECONDS | 5 seconds; finite number from 0.1 to 30 |
 
-Database configuration is masked and validated syntactically only: this step
-does not connect, validate credentials, or establish readiness. For tests,
+Database configuration is masked and validated syntactically. Settings, imports,
+app creation and startup do not connect; readiness or explicit database work
+requests connectivity. For tests,
 `load_settings({ ... })` avoids process-environment inheritance, and
 `create_app(Settings(environment="test"))` allows explicit application setup.
 Production configuration errors report variable names, not supplied values.
@@ -84,8 +91,33 @@ failure and terminates any unfinished body without internal details. Request
 context is reset in all cases. More detailed diagnostics and streaming semantics
 require a later bounded review; this gate does not implement streaming inference.
 
-PostgreSQL connectivity, ORM, migrations, domain persistence, authorization and
-tenant CRUD remain subsequent work.
+## PostgreSQL foundation
+
+Use a dedicated local/test Jous PostgreSQL database, never production Supabase
+credentials or another application's database. No PostgreSQL service is created
+or started by this checkout. Supply a `postgresql://` or `postgres://` URL through
+`JOUS_DATABASE_URL`; the infrastructure selects SQLAlchemy's asyncpg dialect.
+Percent-encode URL credentials as needed. Driver URL options must be compatible
+with asyncpg (for example `ssl=require`, rather than libpq's `sslmode=require`).
+Production TLS/certificate policy and deployment connection budget require a
+deployment review; do not assume a successful probe proves secure deployment.
+
+The app owns one async engine and async session factory. The pool is capped at
+two connections per process with no overflow; timeout configuration bounds pool
+checkout/connection establishment and the whole readiness probe. Shutdown
+disposes the pool. SQL echo is disabled and SQL parameters are hidden.
+`async with database.transaction() as session` explicitly scopes a unit of work:
+commit on success, rollback on failure, and close the session on either path.
+An empty transaction does not connect. Sessions must not be shared across tasks.
+The unit suite uses actual empty SQLAlchemy sessions and mocked driver/probe
+boundaries; it requires neither PostgreSQL nor SQLite.
+
+For an optional real connectivity check, provision your own local PostgreSQL,
+export its URL, launch the API, and request `/health/ready`. No real database
+integration check is part of the offline suite. There are no tables or schema
+creation calls. Alembic and committed migration history will be introduced in a
+later step, using this configuration; startup must never silently mutate schema.
+Domain persistence, authorization and tenant CRUD remain subsequent work.
 
 ## Repository safety
 
