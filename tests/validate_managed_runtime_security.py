@@ -128,7 +128,8 @@ async def authorized_writes(session, permissions, scope, *, owner):
         'VALUES (:id,:org,:name,:description) RETURNING id,organization_id,name,description'), params)).one_or_none()
     require(row is not None and tuple(row) == (project, scope.organization_id, 'positive-control', 'insert-control'),
             'Authorized Project INSERT failed')
-    await permissions.authorize(scope, Action.UPDATE_PROJECT)
+    project_scope = await permissions.access.project(scope, project)
+    await permissions.authorize(project_scope, Action.UPDATE_PROJECT)
     row = (await session.execute(text(
         "UPDATE public.projects SET name='updated-control',description='update-control' "
         'WHERE id=:id AND organization_id=:org RETURNING id,name,description'), params)).one_or_none()

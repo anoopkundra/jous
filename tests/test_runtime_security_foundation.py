@@ -458,6 +458,77 @@ class RemediationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(effective['database'], 'postgres')
         self.assertEqual(effective['port'], 5432)
 
+    async def test_authorized_writes_use_real_permission_service_and_new_project_scope(self):
+        from jous_api.identity import ProjectScope
+        from jous_api.permissions import Action, PermissionService
+        module = self.validator()
+        for role in ('member', 'owner'):
+            with self.subTest(role=role):
+                scope = OrganizationScope(uuid4(), uuid4())
+                session = context_session()
+                session.info['jous_context'].user_id = scope.user_id
+                session.info['jous_context'].organization_id = scope.organization_id
+                project_rows, writes, checks = {}, [], []
+
+                async def scalar(statement):
+                    # Persistence double only: real AccessService constructs scoped
+                    # queries and real PermissionService evaluates each action.
+                    selected = str(statement.selected_columns[0])
+                    params = statement.compile().params.values()
+                    self.assertIn(scope.user_id, params)
+                    self.assertIn(scope.organization_id, params)
+                    if selected == 'organization_memberships.role':
+                        checks.append('role')
+                        return role
+                    if selected == 'projects.id':
+                        checks.append('project')
+                        return next((key for key in project_rows if key in params), None)
+                    checks.append('organization')
+                    return scope.organization_id
+
+                async def execute(statement, params):
+                    sql = str(statement)
+                    result = MagicMock()
+                    if sql.startswith('INSERT INTO public.projects'):
+                        self.assertTrue(checks and checks[-1] == 'role', 'INSERT must follow authorization')
+                        self.assertEqual(params['org'], scope.organization_id)
+                        project_rows[params['id']] = (params['name'], params['description'])
+                        writes.append('project.insert')
+                        result.one_or_none.return_value = (params['id'], params['org'], params['name'], params['description'])
+                    elif sql.startswith('UPDATE public.projects'):
+                        self.assertIn('project', checks, 'UPDATE must revalidate the created Project')
+                        self.assertIn(params['id'], project_rows)
+                        self.assertEqual(params['org'], scope.organization_id)
+                        project_rows[params['id']] = ('updated-control', 'update-control')
+                        writes.append('project.update')
+                        result.one_or_none.return_value = (params['id'], *project_rows[params['id']])
+                    else:
+                        self.assertTrue(sql.startswith('UPDATE public.organizations'))
+                        self.assertEqual(role, 'owner')
+                        writes.append('organization.update')
+                        result.one_or_none.return_value = (scope.organization_id, 'owner-update-control')
+                    return result
+
+                session.scalar.side_effect = scalar
+                session.execute.side_effect = execute
+                permissions = PermissionService(AccessService(session))
+                with patch.object(permissions, 'authorize', wraps=permissions.authorize) as authorize:
+                    await module.authorized_writes(session, permissions, scope, owner=role == 'owner')
+                    calls = authorize.call_args_list
+                    self.assertEqual(calls[0].args, (scope, Action.CREATE_PROJECT))
+                    created = next(iter(project_rows))
+                    self.assertEqual(calls[1].args, (ProjectScope(scope.user_id, scope.organization_id, created),
+                                                    Action.UPDATE_PROJECT))
+                    if role == 'owner':
+                        self.assertEqual(calls[2].args, (scope, Action.UPDATE_ORGANIZATION_NAME))
+                self.assertEqual(writes, ['project.insert', 'project.update'] +
+                                 (['organization.update'] if role == 'owner' else []))
+                self.assertEqual(project_rows[created], ('updated-control', 'update-control'))
+                before = session.execute.await_count
+                with self.assertRaises(AccessDenied):
+                    await permissions.authorize(scope, Action.UPDATE_PROJECT)
+                self.assertEqual(session.execute.await_count, before)
+
     async def test_deny_all_insert_or_update_cannot_pass_positive_evidence(self):
         module = self.validator()
         scope = OrganizationScope(uuid4(), uuid4())
