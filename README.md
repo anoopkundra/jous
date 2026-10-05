@@ -1,7 +1,7 @@
 # Jous
 
 Jous is the economic layer for AI builders. This checkout implements only
-JOUS.CORE.1A Step 1: repository boundaries and reproducible dependencies.
+JOUS.CORE.1A Steps 1–2: repository/dependency boundaries and configured process health.
 
 | Path | Responsibility |
 | --- | --- |
@@ -21,7 +21,8 @@ boundary within Organization ownership. Model, supplier, and memory-provider
 choices must not own Project identity. Source truth and derived memory remain
 distinct future concepts. No mutable balance is financial authority.
 
-This shell has no API routes, API connectivity, database, authentication, model
+The API exposes only `GET /health/live` for process liveness. This shell has no
+frontend API connectivity, database, authentication, model
 execution, routing, ledger, wallet, rewards, payments, or memory engine.
 It is not deployment-ready and does not complete CORE.1A.
 
