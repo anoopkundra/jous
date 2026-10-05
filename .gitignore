@@ -1,0 +1,15 @@
+node_modules/
+.next/
+*.tsbuildinfo
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example
+.coverage
+.pytest_cache/
+.npm-cache/

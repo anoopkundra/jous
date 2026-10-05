@@ -1,0 +1,14 @@
+{
+  "name": "jous",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "workspaces": ["apps/web"],
+  "engines": { "node": ">=22.22.0 <23", "npm": ">=10 <11" },
+  "packageManager": "npm@10.9.4",
+  "scripts": {
+    "dev:web": "npm run dev --workspace=@jous/web",
+    "build:web": "npm run build --workspace=@jous/web",
+    "typecheck:web": "npm run typecheck --workspace=@jous/web"
+  }
+}
