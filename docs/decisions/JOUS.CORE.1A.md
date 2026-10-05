@@ -836,6 +836,174 @@ It does not automatically authorize implementation of every later MVP gate.
 
 ---
 
+## 33. Founder Decision: Step 6 and Step 7 Security Gates
+
+Status: APPROVED IN PRINCIPLE — implementation remains a separately authorized task.
+
+### Completed Foundation: Steps 1–5
+
+Steps 1–5 established the repository/dependency foundation, typed configuration,
+structured logging, correlation and safe errors, process liveness, PostgreSQL
+connectivity/session/readiness infrastructure, and Alembic revision
+`0001_identity_project` with User, Organization, OrganizationMembership and Project.
+
+Step 5 established the provider-neutral, fail-closed sequence:
+
+VerifiedPrincipal → RequestIdentity → active User → active OrganizationMembership
+→ authorized Organization scope → authorized Project scope.
+
+Scopes are immutable and request-local. Persistence queries enforce tenant/project
+scoping. Offline and controlled managed PostgreSQL application-layer isolation
+validation passed. This does not prove runtime-role/RLS isolation.
+
+Supabase automatic RLS remains enabled; no Jous RLS policies exist. No public CRUD,
+production credential verification or Supabase Auth integration exists in Steps 1–5.
+
+### Step Split and Public CRUD Gate
+
+- Step 6: production credential verification and application action authorization.
+- Step 7: dedicated runtime PostgreSQL role, transaction-local database identity,
+  RLS defense-in-depth and real runtime-role isolation validation.
+- Public CRUD is prohibited until both Step 6 and Step 7 pass.
+
+### Authentication and Actual Project Configuration
+
+Supabase Auth is the approved initial authentication provider, implemented as a
+replaceable adapter below the Jous authentication boundary. The domain flow remains:
+
+External Credential → Provider-Specific Verification Adapter
+→ VerifiedPrincipal(issuer, subject) → active internal Jous User
+→ RequestIdentity(user_id).
+
+No Supabase-specific identity object is authoritative in domain services.
+
+The non-secret authentication preflight is complete. Verified Jous project facts:
+
+- Project reference: `aqcixpoorbhjgvdkdjqd`.
+- Exact issuer: `https://aqcixpoorbhjgvdkdjqd.supabase.co/auth/v1`.
+- Expected audience for normal authenticated end-user access tokens: `authenticated`.
+- Current JWT signing key: ECC P-256 / ES256.
+- Public JWKS: `https://aqcixpoorbhjgvdkdjqd.supabase.co/auth/v1/.well-known/jwks.json`.
+  The endpoint has been verified reachable and exposes the current ES256 verification key.
+- Previous signing key: Legacy HS256 Shared Secret, retained by Supabase during the
+  token-expiration transition.
+
+CORE.1A Step 6 accepts only ES256 end-user access tokens. Do not import or depend on
+the legacy HS256 shared secret. Legacy HS256 Jous authentication fails closed; no
+HS256 fallback is authorized. Existing old Supabase sessions may refresh or
+reauthenticate to obtain newly issued ES256 tokens.
+
+The supported authenticated end-user token profile requires:
+
+- the exact issuer above and audience `authenticated`;
+- role `authenticated`;
+- a valid subject representing the Supabase Auth user;
+- `is_anonymous` equal to boolean `false`;
+- a valid `session_id` for the supported user access-token profile;
+- valid `exp` and `iat`, and validation of `nbf` when present;
+- an explicit ES256 algorithm allowlist;
+- a compatible `kid`/key from the configured trusted JWKS.
+
+Token headers must never expand trusted algorithms or key locations.
+Supabase `role=authenticated` is not a Jous Organization role. Jous owner/member
+authority comes only from internal Jous persistence and central action authorization.
+
+Verified access-token expiry is 3600 seconds. Current session settings are:
+
+- single-session enforcement OFF;
+- session time-box 0 / never;
+- inactivity timeout 0 / never.
+
+Current authentication settings observed are:
+
+- Email authentication enabled;
+- Email confirmation enabled;
+- Anonymous sign-ins disabled;
+- Manual account linking disabled;
+- New-user signup currently enabled.
+
+Enabled Supabase signup does not authorize a Jous identity. Unknown external
+identities still fail closed: controlled provisioning requires an exact
+issuer/subject mapping to an active pre-provisioned internal Jous User.
+Public/new-user signup should be disabled under a separately authorized Supabase
+configuration task before controlled CORE.1A production-like testing. This decision
+does not change that setting.
+
+Step 6 is approved to locally verify new ES256 access tokens against the trusted
+project JWKS using a maintained JWT library. Verification must fail closed. Use
+bounded JWKS retrieval/cache/refresh behavior and never follow token-supplied key URLs.
+Do not log or persist bearer tokens, private keys, shared secrets, service-role
+credentials or sensitive claims. Keep Supabase behind the replaceable authentication
+adapter boundary.
+
+### Roles and Central Action Authorization
+
+Only `owner` and `member` are approved. Do not introduce `admin`. Unknown roles and
+unknown actions fail closed. Authorization is centrally action-based, not scattered
+direct role comparisons.
+
+| Role | Approved CORE.1A actions |
+| --- | --- |
+| member | read Organization; list Projects; read Project; create Project; update Project; read own Membership |
+| owner | all member actions; update Organization name; archive/deactivate Project |
+
+Defer invitations, adding/removing Membership, changing Membership roles, deleting
+Organization, destructive Project deletion, billing administration, and ownership
+transfer/recovery.
+
+Administrative Organization ownership is represented by active owner membership.
+Do not add `organization.owner_user_id`. This authority does not imply payment
+authority, legal ownership, authority to modify financial history, or authority over
+future ledger records. Future owner transfer/removal must preserve at least one
+active owner and requires a separately reviewed transactional workflow.
+
+### Controlled Provisioning and Schema
+
+Step 6 uses controlled/pre-provisioned Jous accounts. Authenticated but unknown
+external identities remain denied. Authentication must not automatically create
+User, Organization, Membership or Project. Self-service bootstrap/onboarding is a
+later explicit operation. Never merge/link accounts by email. Preserve internal
+Jous User UUID across future identity-provider changes.
+
+No four-table schema change is approved for Step 6. No migration `0002`.
+The current issuer/subject linkage is sufficient for initial single-provider identity.
+
+### Step 7 Database Security Direction
+
+Use a dedicated Jous runtime role with migration/admin credentials separate from
+runtime credentials. The runtime role must have no schema ownership, DDL, role
+administration, BYPASSRLS, ability to assume privileged roles, migration-history
+writes, or access to unrelated Supabase-managed objects. Grant only minimum required
+table privileges. Establish RLS defense-in-depth on all four foundation tables and
+validate isolation on managed PostgreSQL using the actual runtime role.
+
+Application authorization remains authoritative for business/action permissions.
+Database RLS provides tenant-row isolation and defense against query mistakes.
+Do not weaken or disable existing RLS.
+
+Provider-neutral transaction-local identity/tenant context is the leading design;
+its exact implementation awaits Step 7 review. Prove initialization every transaction,
+parameterized values, transaction-local lifetime, no persistent session identity,
+missing/malformed context denial, rollback/exception/cancellation safety, sequential
+connection reuse safety and concurrent tenant isolation with no pool leakage.
+
+Before public CRUD, require passing production credential verification, safe mapping
+to active internal User, central action permissions, dedicated runtime role, RLS
+policies, transaction context, real runtime-role cross-tenant PostgreSQL tests,
+pooled-connection isolation, safe errors/logging and absence of public impersonation
+or test routes.
+
+### Preserved Invariants
+
+No financial authority or mutable balance authority belongs in authentication/access
+tables. Project remains the primary context/economic attribution boundary, neutral
+to memory provider, model, supplier, gateway, routing and execution provider.
+Authentication remains replaceable and suppliers remain below the adapter boundary.
+These decisions authorize no inference, rewards, payments, wallet, context/memory
+engine or Jous Auto execution.
+
+---
+
 # FINAL CORE.1A PRINCIPLE
 
 > Build the foundation once, preserve Jous's economic and context architecture, and defer every behavior that does not need to exist yet.
