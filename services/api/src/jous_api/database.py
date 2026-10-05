@@ -19,7 +19,8 @@ class DatabaseUnavailable(RuntimeError):
 ROLE_CHECK = """SELECT session_user = 'jous_runtime' AND current_user = 'jous_runtime'
  AND NOT r.rolsuper AND NOT r.rolbypassrls AND NOT r.rolcreatedb AND NOT r.rolcreaterole
  AND NOT r.rolreplication AND NOT r.rolinherit
- AND NOT pg_catalog.has_database_privilege(r.oid, current_database(), 'CREATE,TEMP')
+ AND NOT pg_catalog.has_database_privilege(r.oid, current_database(), 'CREATE')
+ AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_database d WHERE d.datname=current_database() AND d.datdba=r.oid)
  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles other WHERE other.oid <> r.oid
                   AND pg_catalog.pg_has_role(r.oid, other.oid, 'MEMBER'))
  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner=r.oid)
@@ -28,6 +29,50 @@ ROLE_CHECK = """SELECT session_user = 'jous_runtime' AND current_user = 'jous_ru
  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT LIKE 'pg_%'
      AND n.nspname <> 'information_schema' AND pg_catalog.has_schema_privilege(r.oid,n.oid,'CREATE'))
  FROM pg_catalog.pg_roles r WHERE r.rolname=current_user"""
+TEMP_EVIDENCE = """SELECT
+ pg_catalog.has_database_privilege(r.oid,d.oid,'TEMP') AS effective_temp,
+ EXISTS (SELECT 1 FROM pg_catalog.aclexplode(COALESCE(d.datacl,pg_catalog.acldefault('d',d.datdba))) a
+         WHERE a.grantee=0 AND a.privilege_type='TEMPORARY') AS public_temp,
+ EXISTS (SELECT 1 FROM pg_catalog.aclexplode(COALESCE(d.datacl,pg_catalog.acldefault('d',d.datdba))) a
+         WHERE a.grantee=0 AND a.privilege_type='TEMPORARY' AND a.is_grantable) AS public_grant_option,
+ EXISTS (SELECT 1 FROM pg_catalog.aclexplode(COALESCE(d.datacl,pg_catalog.acldefault('d',d.datdba))) a
+         WHERE a.grantee=r.oid AND a.privilege_type='TEMPORARY') AS direct_temp,
+ EXISTS (SELECT 1 FROM pg_catalog.pg_roles other WHERE other.oid<>r.oid
+         AND pg_catalog.pg_has_role(r.oid,other.oid,'MEMBER')) AS memberships,
+ d.datdba=r.oid AS database_owner,
+ pg_catalog.has_database_privilege(r.oid,d.oid,'CREATE') AS database_create,
+ EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT LIKE 'pg_%'
+         AND n.nspname<>'information_schema' AND pg_catalog.has_schema_privilege(r.oid,n.oid,'CREATE')) AS schema_create,
+ r.rolsuper OR r.rolbypassrls OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication
+ OR r.rolinherit OR NOT r.rolcanlogin AS unsafe_attributes
+ FROM pg_catalog.pg_database d CROSS JOIN pg_catalog.pg_roles r
+ WHERE d.datname=current_database() AND r.rolname='jous_runtime'
+ AND current_user=r.rolname AND session_user=r.rolname"""
+
+
+def classify_runtime_temp(evidence):
+    """Catalog evidence only; PUBLIC is an ACL source, not provider branding."""
+    fields = {'effective_temp', 'public_temp', 'public_grant_option', 'direct_temp',
+              'memberships', 'database_owner', 'database_create', 'schema_create', 'unsafe_attributes'}
+    if (not isinstance(evidence, dict) or set(evidence) != fields
+            or any(type(value) is not bool for value in evidence.values())
+            or any(evidence[name] for name in fields - {'effective_temp', 'public_temp'})
+            or evidence['effective_temp'] != evidence['public_temp']):
+        raise DatabaseUnavailable("Runtime database safety check failed")
+    return 'MANAGED_PUBLIC_TEMP_BASELINE' if evidence['effective_temp'] else 'NO_TEMP_PRIVILEGE'
+
+
+async def runtime_temp_evidence(connection):
+    try:
+        rows = (await connection.execute(text(TEMP_EVIDENCE))).mappings().all()
+        if len(rows) != 1:
+            raise DatabaseUnavailable("Runtime database safety check failed")
+        evidence = dict(rows[0])
+        return {'classification': classify_runtime_temp(evidence), **evidence}
+    except Exception:
+        raise DatabaseUnavailable("Runtime database safety check failed") from None
+
+
 BASELINE_CHECK = """SELECT COALESCE(pg_catalog.current_setting('jous.user_id',true),'') = ''
  AND COALESCE(pg_catalog.current_setting('jous.organization_id',true),'') = ''"""
 STATE_CHECK = """SELECT
@@ -58,6 +103,7 @@ async def validate_runtime(connection, *, state=True):
         for sql in (ROLE_CHECK, BASELINE_CHECK, STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
             if await connection.scalar(text(sql)) is not True:
                 raise DatabaseUnavailable("Unsafe runtime database configuration")
+        await runtime_temp_evidence(connection)
         if state:
             # No extra policy may widen authority. Expressions are reviewed in the migration.
             rows = (await connection.execute(text("SELECT tablename, policyname, permissive, roles, cmd "

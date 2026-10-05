@@ -979,7 +979,7 @@ implement Step 7 or authorize database changes in this documentation task.
 
 Use a dedicated restricted `jous_runtime` PostgreSQL LOGIN for application traffic,
 separate from migration/admin credentials. The runtime role must have no schema or
-table ownership, DDL, role administration, BYPASSRLS, ability to assume privileged
+table ownership, permanent-object DDL, role administration, BYPASSRLS, ability to assume privileged
 roles, migration-history writes, or access to unrelated Supabase-managed objects.
 Grant only minimum required privileges and verify effective grants and memberships.
 Do not use Supabase service-role or migration/admin credentials as runtime credentials.
@@ -988,6 +988,23 @@ Use a dedicated minimal `jous_security_reader` NOLOGIN helper-owner role. Runtim
 must have no membership in or ability to assume this role. Grant no automatic
 future-table privileges. Keep Jous object ownership and migration/admin authority
 separate from runtime and helper authority.
+
+#### Founder-Approved PUBLIC TEMP Compatibility
+
+Supabase managed PostgreSQL currently grants database TEMPORARY through PUBLIC.
+Accept no effective TEMP, or solely PUBLIC-derived TEMP without grant option,
+proved through database ACL evidence. Explicit runtime TEMP grants, memberships,
+database ownership and ambiguous provenance fail closed. Database CREATE and
+permanent schema CREATE remain prohibited, alongside all existing restricted-role,
+object-ownership and data-privilege requirements. Do not alter shared PUBLIC or
+Supabase-managed TEMP grants to accommodate Jous.
+
+Jous does not require temporary objects in its normal runtime. PUBLIC-derived TEMP
+is an explicitly accepted managed-platform residual capability: resource exhaustion,
+name shadowing and pooled-session persistence remain risks. Current and future
+privileged helpers must retain hardened search_path and schema-qualified protected
+relations against pg_temp shadowing. This compatibility adjustment does not expand
+MVP scope or alter tenant/RLS architecture, application permissions or provisioning.
 
 #### Exactly Two Privileged Helpers
 

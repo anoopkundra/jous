@@ -10,11 +10,17 @@ revision (0001), actual ownership, existing RLS/policies and effective PUBLIC/ro
 grants. Have the founder review that evidence and approve execution. Stop if shared
 Supabase privileges must change; do not alter managed roles, objects or schemas.
 
-Runtime guards reject effective database CREATE/TEMP, schema CREATE and unrelated
-table access, including privileges inherited through PUBLIC. PostgreSQL commonly
-grants TEMP through PUBLIC: if present, the managed preflight must stop for an
-explicit founder/platform decision. This artifact does not revoke shared privileges
-or silently relax the no-DDL contract to make runtime startup succeed.
+Runtime guards reject effective database CREATE, permanent schema CREATE,
+object/database ownership, memberships and unrelated table access. The approved
+compatibility exception accepts either no TEMP privilege or TEMP supplied solely
+by PUBLIC without grant option. Explicit runtime TEMP grants remain prohibited.
+Supabase currently exposes PUBLIC TEMP; do not change shared managed-role ACLs.
+The validator reports MANAGED_PUBLIC_TEMP_BASELINE from checked catalog evidence.
+Jous's normal runtime does not require or create temporary objects. TEMP retains
+resource-exhaustion and name-shadowing risk; objects can survive commit and pooled
+session reuse. Privileged helpers must keep hardened search_path and qualified
+protected relations to resist pg_temp shadowing. This residual capability does
+not change tenant/RLS architecture or application action authorization.
 
 `runtime_roles.sql` refuses any conflicting existing role. It creates no password,
 role memberships, or jous_owner. Existing administrative ownership remains. The
@@ -60,3 +66,8 @@ An explicitly authorized downgrade targets `0001_identity_project`, never base. 
 removes Step 7 objects/grants and FORCE while retaining the required pre-existing
 ENABLE RLS state. Role lifecycle and credential deactivation are separate tasks.
 Unresolved fixture cleanup is a failure and needs targeted administrative recovery.
+
+Runtime ORM metadata explicitly targets public for all four domain relations;
+authorization queries cannot resolve same-named pg_temp relations. Offline compiled
+SQL checks are not live isolation evidence. A later separately authorized managed
+validator must exercise actual temporary-shadow scenarios before the security gate.

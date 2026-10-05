@@ -31,7 +31,7 @@ EXPECTED = {
 
 class SchemaTests(unittest.TestCase):
     def test_exact_tables_columns_and_neutral_boundaries(self):
-        self.assertEqual(set(Base.metadata.tables), set(EXPECTED))
+        self.assertEqual(set(Base.metadata.tables), {"public." + name for name in EXPECTED})
         for table in Base.metadata.tables.values():
             self.assertEqual(set(table.c.keys()), EXPECTED[table.name])
             for column in table.c:
@@ -67,15 +67,15 @@ class SchemaTests(unittest.TestCase):
                     self.assertIsNotNone(constraint.name)
 
     def test_membership_uniqueness_and_indexes(self):
-        membership = Base.metadata.tables["organization_memberships"]
+        membership = Base.metadata.tables["public.organization_memberships"]
         uniques = [c for c in membership.constraints if isinstance(c, UniqueConstraint)]
         self.assertEqual([(c.name, list(c.columns.keys())) for c in uniques],
                          [("uq_organization_memberships_organization_user", ["organization_id", "user_id"])])
         self.assertEqual({i.name for i in membership.indexes}, {"ix_organization_memberships_user_id"})
-        self.assertEqual({i.name for i in Base.metadata.tables["projects"].indexes}, {"ix_projects_organization_id"})
+        self.assertEqual({i.name for i in Base.metadata.tables["public.projects"].indexes}, {"ix_projects_organization_id"})
 
     def test_authentication_linkage_is_nullable_paired_and_unique(self):
-        users = Base.metadata.tables["users"]
+        users = Base.metadata.tables["public.users"]
         self.assertTrue(users.c.auth_issuer.nullable and users.c.auth_subject.nullable)
         self.assertTrue(any(isinstance(c, UniqueConstraint) and list(c.columns.keys()) == ["auth_issuer", "auth_subject"]
                             for c in users.constraints))
@@ -88,6 +88,33 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("TIMESTAMP WITH TIME ZONE", ddl)
             self.assertIn("UUID", ddl)
             self.assertTrue(all(constraint.name for constraint in table.constraints))
+
+    def test_explicit_public_metadata_matches_frozen_initial_migration(self):
+        from sqlalchemy import MetaData, Table, Index
+        spec = importlib.util.spec_from_file_location('frozen_initial', ROOT / 'services/api/migrations/versions/0001_identity_project.py')
+        revision = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(revision)
+        frozen = MetaData()
+        def table(name, *items, **kw):
+            return Table(name, frozen, *items, **kw)
+        def index(name, table_name, columns, **kw):
+            Index(name, *(frozen.tables[kw['schema'] + '.' + table_name].c[col] for col in columns))
+        with patch.object(revision.op, 'create_table', side_effect=table), \
+             patch.object(revision.op, 'create_index', side_effect=index), \
+             patch.object(revision.op, 'f', side_effect=lambda name: name):
+            revision.upgrade()
+        self.assertEqual(set(frozen.tables), set(Base.metadata.tables))
+        for name, actual in Base.metadata.tables.items():
+            expected = frozen.tables[name]
+            # Column/constraint ordering differs between mixins and frozen revision;
+            # order is not a physical schema difference for Alembic.
+            def ddl_lines(table):
+                return sorted(line.strip().rstrip(',') for line in
+                              str(CreateTable(table).compile(dialect=postgresql.dialect())).splitlines()
+                              if line.strip())
+            self.assertEqual(ddl_lines(actual), ddl_lines(expected))
+            self.assertEqual({(i.name, tuple(i.columns.keys())) for i in actual.indexes},
+                             {(i.name, tuple(i.columns.keys())) for i in expected.indexes})
 
 
 class MigrationTests(unittest.TestCase):

@@ -110,6 +110,36 @@ class AccessQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await service.project(OrganizationScope(user, organization), project),
                          ProjectScope(user, organization, project))
 
+    async def test_all_authorization_queries_target_public_despite_temp_search_path(self):
+        # Compilation proves explicit targets, not live PostgreSQL enforcement.
+        from jous_api.permissions import PermissionService, Action
+        from jous_api.models import Base
+        user, org, project = uuid4(), uuid4(), uuid4()
+        session = context_session()
+        session.scalar.return_value = user
+        access = AccessService(session)
+        await access.resolve(VerifiedPrincipal('verified-issuer', 'verified-subject'))
+        self.assertIn('jous_security.resolve_user', str(session.scalar.call_args.args[0]))
+        await access.active_user(RequestIdentity(user))
+        self.assertIn('FROM public.users', str(session.scalar.call_args.args[0].compile(dialect=postgresql.dialect())))
+        session.scalar.side_effect = [org, org]
+        await access.organization(RequestIdentity(user), org)
+        for call in session.scalar.call_args_list[-2:]:
+            sql = str(call.args[0].compile(dialect=postgresql.dialect()))
+            self.assertIn('public.organization_memberships', sql)
+        session.scalar.side_effect = [org, project, 'owner']
+        await PermissionService(access).authorize(ProjectScope(user, org, project), Action.UPDATE_PROJECT)
+        for call in session.scalar.call_args_list[-3:]:
+            sql = str(call.args[0].compile(dialect=postgresql.dialect()))
+            for name in ('users', 'organizations', 'organization_memberships'):
+                self.assertIn('public.' + name, sql)
+                self.assertNotRegex(sql, r'(?:FROM|JOIN)\s+' + name + r'\b')
+        project_sql = str(session.scalar.call_args_list[-2].args[0].compile(dialect=postgresql.dialect()))
+        self.assertIn('JOIN public.projects', project_sql)
+        self.assertNotRegex(project_sql, r'(?:FROM|JOIN)\s+projects\b')
+        self.assertEqual({table.schema for table in Base.metadata.tables.values()}, {'public'})
+
+
 
 class DependencyTests(unittest.IsolatedAsyncioTestCase):
     def application(self):

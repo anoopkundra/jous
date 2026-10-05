@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from jous_api.config import load_settings, load_migration_settings
-from jous_api.database import Database, validate_runtime, BASELINE_CHECK
+from jous_api.database import Database, validate_runtime, BASELINE_CHECK, runtime_temp_evidence
 from jous_api.access import AccessService
 from jous_api.identity import AccessDenied, VerifiedPrincipal, RequestIdentity
 from jous_api.models import User, Organization, OrganizationMembership, Project
@@ -40,6 +40,27 @@ def fingerprint(settings):
                   (url.username or '').rpartition('.')[2] == PROJECT_REFERENCE)
     require(direct or pooled, 'Approved project reference could not be verified')
     return hashlib.sha256(f'{url.host}:{url.port or 5432}/{url.database}/{PROJECT_REFERENCE}'.encode()).hexdigest()[:16]
+
+
+async def independent_temp_evidence(connection):
+    """Validator-only raw ACL cross-check; does not trust guard classification."""
+    row = (await connection.execute(text("""SELECT r.oid AS runtime_oid,
+      pg_catalog.has_database_privilege(r.oid,d.oid,'TEMP') AS effective_temp,
+      d.datacl::text AS database_acl
+      FROM pg_catalog.pg_database d CROSS JOIN pg_catalog.pg_roles r
+      WHERE d.datname=current_database() AND r.rolname='jous_runtime'"""))).mappings().one()
+    entries = (await connection.execute(text("""SELECT a.grantee,a.privilege_type,a.is_grantable
+      FROM pg_catalog.pg_database d CROSS JOIN LATERAL
+      pg_catalog.aclexplode(COALESCE(d.datacl,pg_catalog.acldefault('d',d.datdba))) a
+      WHERE d.datname=current_database()"""))).mappings().all()
+    temp = [entry for entry in entries if entry['privilege_type'] == 'TEMPORARY']
+    public = [entry for entry in temp if entry['grantee'] == 0]
+    direct = [entry for entry in temp if entry['grantee'] == row['runtime_oid']]
+    require(type(row['effective_temp']) is bool and not direct
+            and all(entry['is_grantable'] is False for entry in public)
+            and row['effective_temp'] == bool(public), 'Independent TEMP provenance check failed')
+    return {'effective_temp': row['effective_temp'], 'public_temp': bool(public),
+            'public_grant_option': False, 'direct_temp': False}
 
 
 async def snapshot(engine):
@@ -304,6 +325,12 @@ async def run(args):
         runtime=Database(runtime_settings)
         async with runtime.engine.connect() as connection:
             await validate_runtime(connection)
+            independent = await independent_temp_evidence(connection)
+            production = await runtime_temp_evidence(connection)
+            require(all(production[key] == value for key, value in independent.items()),
+                    'Independent/production TEMP evidence mismatch')
+            print('RUNTIME DATABASE PRIVILEGE EVIDENCE: ' + json.dumps(
+                {'production': production, 'independent': independent}, sort_keys=True))
             server=list((await connection.execute(text('SELECT current_database(),inet_server_addr()::text,inet_server_port()'))).one())
             require(server==before['server'],'Server identity mismatch')
         async with admin.engine.connect() as connection:

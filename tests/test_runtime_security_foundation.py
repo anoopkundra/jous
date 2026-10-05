@@ -302,6 +302,82 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class GuardTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def temp_evidence(public=False):
+        return dict(effective_temp=public, public_temp=public, public_grant_option=False,
+                    direct_temp=False, memberships=False, database_owner=False,
+                    database_create=False, schema_create=False, unsafe_attributes=False)
+
+    async def test_bounded_temp_provenance(self):
+        from jous_api.database import classify_runtime_temp, runtime_temp_evidence
+        for public, expected in ((False, 'NO_TEMP_PRIVILEGE'), (True, 'MANAGED_PUBLIC_TEMP_BASELINE')):
+            evidence = self.temp_evidence(public)
+            self.assertEqual(classify_runtime_temp(evidence), expected)
+            connection = AsyncMock()
+            result = MagicMock()
+            result.mappings.return_value.all.return_value = [evidence]
+            connection.execute.return_value = result
+            self.assertEqual((await runtime_temp_evidence(connection))['classification'], expected)
+            connection.execute.assert_awaited_once()
+
+    async def test_temp_elevations_and_ambiguous_provenance_fail_closed(self):
+        from jous_api.database import classify_runtime_temp, runtime_temp_evidence
+        faults = ('direct_temp', 'public_grant_option', 'memberships', 'database_owner',
+                  'database_create', 'schema_create', 'unsafe_attributes')
+        for fault in faults:
+            evidence = self.temp_evidence(True)
+            evidence[fault] = True
+            with self.subTest(fault=fault), self.assertRaises(DatabaseUnavailable):
+                classify_runtime_temp(evidence)
+        for evidence in (None, {}, {**self.temp_evidence(), 'effective_temp': True},
+                         {**self.temp_evidence(True), 'direct_temp': 0}):
+            with self.assertRaises(DatabaseUnavailable):
+                classify_runtime_temp(evidence)
+        for rows in ([], [self.temp_evidence(), self.temp_evidence()]):
+            connection = AsyncMock()
+            result = MagicMock()
+            result.mappings.return_value.all.return_value = rows
+            connection.execute.return_value = result
+            with self.assertRaises(DatabaseUnavailable):
+                await runtime_temp_evidence(connection)
+        connection = AsyncMock()
+        connection.execute.side_effect = RuntimeError('secret-driver-state')
+        with self.assertRaises(DatabaseUnavailable) as error:
+            await runtime_temp_evidence(connection)
+        self.assertNotIn('secret', str(error.exception))
+
+    async def test_independent_validator_rejects_direct_temp_without_production_classifier(self):
+        spec = importlib.util.spec_from_file_location('temp_validator', ROOT / 'tests/validate_managed_runtime_security.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for direct, grant in ((False, False), (True, False), (False, True)):
+            connection = AsyncMock()
+            row_result, acl_result = MagicMock(), MagicMock()
+            row_result.mappings.return_value.one.return_value = dict(runtime_oid=42, effective_temp=True, database_acl='metadata')
+            entries = [dict(grantee=0, privilege_type='TEMPORARY', is_grantable=grant)]
+            if direct:
+                entries.append(dict(grantee=42, privilege_type='TEMPORARY', is_grantable=False))
+            acl_result.mappings.return_value.all.return_value = entries
+            connection.execute.side_effect = [row_result, acl_result]
+            with patch.object(module, 'runtime_temp_evidence', side_effect=AssertionError('must remain independent')):
+                if direct or grant:
+                    with self.assertRaises(RuntimeError):
+                        await module.independent_temp_evidence(connection)
+                else:
+                    self.assertTrue((await module.independent_temp_evidence(connection))['public_temp'])
+
+    def test_role_sql_retains_strict_guards_and_temp_acl_sources(self):
+        from jous_api.database import ROLE_CHECK, TEMP_EVIDENCE
+        self.assertIn("current_database(), 'CREATE'", ROLE_CHECK)
+        for clause in ('d.datdba=r.oid', 'pg_has_role', 'c.relowner=r.oid',
+                       'n.nspowner=r.oid', 'p.proowner=r.oid', 'has_schema_privilege',
+                       'rolsuper', 'rolbypassrls', 'rolcreatedb', 'rolcreaterole',
+                       'rolreplication', 'rolinherit'):
+            self.assertIn(clause, ROLE_CHECK)
+        for clause in ('aclexplode', 'acldefault', 'a.grantee=0', 'a.grantee=r.oid',
+                       'a.is_grantable', "a.privilege_type='TEMPORARY'"):
+            self.assertIn(clause, TEMP_EVIDENCE)
+
     def complete_connection(self):
         connection = AsyncMock()
         connection.scalar.return_value = True
@@ -322,12 +398,29 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         policy_result, privilege_result = MagicMock(), MagicMock()
         policy_result.all.return_value = policies
         privilege_result.all.return_value = privileges
-        connection.execute.side_effect = [policy_result, privilege_result]
+        temp_result = MagicMock()
+        temp_result.mappings.return_value.all.return_value = [self.temp_evidence()]
+        connection.execute.side_effect = [temp_result, policy_result, privilege_result]
         return connection, policies, privileges
 
     async def test_expected_catalog_and_acl_contract_passes(self):
-        connection, _, _ = self.complete_connection()
-        await validate_runtime(connection)
+        for public in (False, True):
+            connection, _, _ = self.complete_connection()
+            temp_result = connection.execute.side_effect
+            # Rebuild the ordered results to exercise real validate_runtime,
+            # including classification, for both accepted platform baselines.
+            results = list(temp_result)
+            results[0].mappings.return_value.all.return_value = [self.temp_evidence(public)]
+            connection.execute.side_effect = results
+            await validate_runtime(connection)
+
+    def test_validator_reports_checked_provenance(self):
+        source = (ROOT / 'tests/validate_managed_runtime_security.py').read_text()
+        self.assertIn('await validate_runtime(connection)', source)
+        self.assertIn('await independent_temp_evidence(connection)', source)
+        self.assertIn('production = await runtime_temp_evidence(connection)', source)
+        self.assertNotIn('TEMP = safe', source)
+
 
     async def test_extra_permissive_policy_and_project_status_grant_deny(self):
         for fault in ('policy', 'status', 'helper_memberships'):

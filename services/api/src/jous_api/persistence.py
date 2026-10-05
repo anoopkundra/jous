@@ -9,8 +9,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    # PostgreSQL's default application schema is public; revisions qualify it explicitly.
-    metadata = MetaData(naming_convention={
+    # Explicit schema prevents pg_temp/search_path substitution of domain relations.
+    metadata = MetaData(schema="public", naming_convention={
         "pk": "pk_%(table_name)s",
         "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
         "uq": "uq_%(table_name)s_%(column_0_name)s",
