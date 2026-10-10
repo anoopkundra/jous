@@ -325,6 +325,10 @@ def _existing(connection, contract, query, migrated):
 def freeze_pre_migration_bindings(connection,contract,query):
     return _issue(VerifiedExistingBindings,_existing(connection,contract,query,False))
 
+def freeze_runtime_bindings(connection,contract,query):
+    """Verify the migrated layout independently of all observed policy rows."""
+    return _issue(VerifiedExistingBindings,_existing(connection,contract,query,True))
+
 def revalidate_existing_bindings(connection,contract,bindings,query):
     expected=_read(bindings,VerifiedExistingBindings)
     actual=_existing(connection,contract,query,True)

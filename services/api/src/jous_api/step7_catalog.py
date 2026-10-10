@@ -21,9 +21,9 @@ POLICY_SQL = _POLICY_PROJECTION + """ WHERE n.nspname='public'
  AND c.relname IN ('users','organizations','organization_memberships','projects')
  ORDER BY c.oid,p.oid"""
 
-# No approved raw policy evidence is available in the amendment base. This
-# deliberate gate must be replaced only by independently reviewed exact data.
-# Names/counts or SQL expressions are never a substitute for raw trees.
+# Historical concrete-record API sentinel, retained for offline evidence tests.
+# Production migration AND runtime use step7_execution_contract's hash-pinned
+# templates and independent bindings instead. Never populate this from live rows.
 APPROVED_POLICY_CONTRACT = None
 
 

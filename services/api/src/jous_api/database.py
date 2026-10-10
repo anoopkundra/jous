@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from . import step7_catalog
 from .config import Settings
 from .database_context import DatabaseContext
+from .runtime_policy import verify_runtime_policy_authority
+from .runtime_resolution import catalog_resolution
+from . import runtime_transport, step7_execution_contract
 
 
 class DatabaseUnavailable(RuntimeError):
@@ -65,11 +68,12 @@ def classify_runtime_temp(evidence):
 
 async def runtime_temp_evidence(connection):
     try:
-        rows = (await connection.execute(text(TEMP_EVIDENCE))).mappings().all()
-        if len(rows) != 1:
-            raise DatabaseUnavailable("Runtime database safety check failed")
-        evidence = dict(rows[0])
-        return {'classification': classify_runtime_temp(evidence), **evidence}
+        async with catalog_resolution(connection):
+            rows = (await connection.execute(text(TEMP_EVIDENCE))).mappings().all()
+            if len(rows) != 1:
+                raise DatabaseUnavailable("Runtime database safety check failed")
+            evidence = dict(rows[0])
+            return {'classification': classify_runtime_temp(evidence), **evidence}
     except Exception:
         raise DatabaseUnavailable("Runtime database safety check failed") from None
 
@@ -101,66 +105,65 @@ STATE_CHECK = """SELECT
 async def validate_runtime(connection, *, state=True):
     """Catalog/connectivity checks only; never reads domain rows or calls helpers."""
     try:
-        for sql in (ROLE_CHECK, BASELINE_CHECK, STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
-            if await connection.scalar(text(sql)) is not True:
-                raise DatabaseUnavailable("Unsafe runtime database configuration")
-        await runtime_temp_evidence(connection)
-        if state:
-            policy_rows = (await connection.execute(text(step7_catalog.POLICY_SQL))).mappings().all()
-            step7_catalog.verify_policy_records([dict(row) for row in policy_rows],
-                                               step7_catalog.APPROVED_POLICY_CONTRACT)
-            safe_tables = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM "
-                "(VALUES ('users'),('organizations'),('organization_memberships'),('projects')) t(name) "
-                "CROSS JOIN (VALUES ('DELETE'),('TRUNCATE'),('TRIGGER'),('REFERENCES')) p(priv) "
-                "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
-                "WHERE pg_catalog.has_table_privilege(CAST(r.name AS pg_catalog.name), 'public.' || t.name, p.priv))"))
-            if safe_tables is not True:
-                raise DatabaseUnavailable("Unsafe runtime database configuration")
-            allowed = {
-                "users": {"SELECT": {"id", "status"}},
-                "organizations": {"SELECT": {"id", "name", "status", "created_at", "updated_at"},
-                                  "UPDATE": {"name", "updated_at"}},
-                "organization_memberships": {"SELECT": {"id", "user_id", "organization_id", "role", "status", "created_at", "updated_at"}},
-                "projects": {"SELECT": {"id", "organization_id", "name", "description", "status", "created_at", "updated_at"},
-                             "INSERT": {"id", "organization_id", "name", "description"},
-                             "UPDATE": {"name", "description", "updated_at"}}}
-            reader = {"users": {"id", "auth_issuer", "auth_subject", "status"}, "organizations": {"id", "status"}}
-            privileges = (await connection.execute(text("SELECT c.relname, a.attname, r.name, p.priv, "
-                "pg_catalog.has_column_privilege(CAST(r.name AS pg_catalog.name), c.oid, a.attnum, p.priv) "
-                "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-                "JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid "
-                "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
-                "CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(priv) "
-                "WHERE n.nspname='public' AND c.relname IN "
-                "('users','organizations','organization_memberships','projects') "
-                "AND a.attnum>0 AND NOT a.attisdropped"))).all()
-            if not privileges:
-                raise DatabaseUnavailable("Unsafe runtime database configuration")
-            for table, column, role, privilege, actual in privileges:
-                expected = (column in allowed[table].get(privilege, set()) if role == "jous_runtime"
-                            else privilege == "SELECT" and column in reader.get(table, set()))
-                if actual is not expected:
+        async with catalog_resolution(connection):
+            for sql in (ROLE_CHECK, BASELINE_CHECK, STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
+                if await connection.scalar(text(sql)) is not True:
                     raise DatabaseUnavailable("Unsafe runtime database configuration")
-            helper_safe = await connection.scalar(text("SELECT NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls "
-                "AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolinherit "
-                "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid) "
-                "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner=r.oid) "
-                "FROM pg_catalog.pg_roles r WHERE r.rolname='jous_security_reader'"))
-            if helper_safe is not True:
-                raise DatabaseUnavailable("Unsafe runtime database configuration")
-            unrelated_safe = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
-                "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-                "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
-                "WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') AND n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$' "
-                "AND n.nspname <> 'information_schema' AND NOT (n.nspname='public' AND "
-                "((r.name='jous_runtime' AND c.relname IN ('users','organizations','organization_memberships','projects','alembic_version')) "
-                "OR (r.name='jous_security_reader' AND c.relname IN ('users','organizations')))) "
-                "AND (pg_catalog.has_any_column_privilege(CAST(r.name AS pg_catalog.name),c.oid,'SELECT,INSERT,UPDATE,REFERENCES') "
-                "OR pg_catalog.has_table_privilege(CAST(r.name AS pg_catalog.name),c.oid,'DELETE,TRUNCATE,TRIGGER'))) "
-                "AND NOT pg_catalog.has_table_privilege('jous_runtime','public.alembic_version',"
-                "'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES')"))
-            if unrelated_safe is not True:
-                raise DatabaseUnavailable("Unsafe runtime database configuration")
+            await runtime_temp_evidence(connection)
+            if state:
+                await verify_runtime_policy_authority(connection)
+                safe_tables = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM "
+                    "(VALUES ('users'),('organizations'),('organization_memberships'),('projects')) t(name) "
+                    "CROSS JOIN (VALUES ('DELETE'),('TRUNCATE'),('TRIGGER'),('REFERENCES')) p(priv) "
+                    "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
+                    "WHERE pg_catalog.has_table_privilege(CAST(r.name AS pg_catalog.name), 'public.' || t.name, p.priv))"))
+                if safe_tables is not True:
+                    raise DatabaseUnavailable("Unsafe runtime database configuration")
+                allowed = {
+                    "users": {"SELECT": {"id", "status"}},
+                    "organizations": {"SELECT": {"id", "name", "status", "created_at", "updated_at"},
+                                      "UPDATE": {"name", "updated_at"}},
+                    "organization_memberships": {"SELECT": {"id", "user_id", "organization_id", "role", "status", "created_at", "updated_at"}},
+                    "projects": {"SELECT": {"id", "organization_id", "name", "description", "status", "created_at", "updated_at"},
+                                 "INSERT": {"id", "organization_id", "name", "description"},
+                                 "UPDATE": {"name", "description", "updated_at"}}}
+                reader = {"users": {"id", "auth_issuer", "auth_subject", "status"}, "organizations": {"id", "status"}}
+                privileges = (await connection.execute(text("SELECT c.relname, a.attname, r.name, p.priv, "
+                    "pg_catalog.has_column_privilege(CAST(r.name AS pg_catalog.name), c.oid, a.attnum, p.priv) "
+                    "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                    "JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid "
+                    "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
+                    "CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) p(priv) "
+                    "WHERE n.nspname='public' AND c.relname IN "
+                    "('users','organizations','organization_memberships','projects') "
+                    "AND a.attnum>0 AND NOT a.attisdropped"))).all()
+                if not privileges:
+                    raise DatabaseUnavailable("Unsafe runtime database configuration")
+                for table, column, role, privilege, actual in privileges:
+                    expected = (column in allowed[table].get(privilege, set()) if role == "jous_runtime"
+                                else privilege == "SELECT" and column in reader.get(table, set()))
+                    if actual is not expected:
+                        raise DatabaseUnavailable("Unsafe runtime database configuration")
+                helper_safe = await connection.scalar(text("SELECT NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls "
+                    "AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolinherit "
+                    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid) "
+                    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner=r.oid) "
+                    "FROM pg_catalog.pg_roles r WHERE r.rolname='jous_security_reader'"))
+                if helper_safe is not True:
+                    raise DatabaseUnavailable("Unsafe runtime database configuration")
+                unrelated_safe = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
+                    "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                    "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
+                    "WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') AND n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$' "
+                    "AND n.nspname <> 'information_schema' AND NOT (n.nspname='public' AND "
+                    "((r.name='jous_runtime' AND c.relname IN ('users','organizations','organization_memberships','projects','alembic_version')) "
+                    "OR (r.name='jous_security_reader' AND c.relname IN ('users','organizations')))) "
+                    "AND (pg_catalog.has_any_column_privilege(CAST(r.name AS pg_catalog.name),c.oid,'SELECT,INSERT,UPDATE,REFERENCES') "
+                    "OR pg_catalog.has_table_privilege(CAST(r.name AS pg_catalog.name),c.oid,'DELETE,TRUNCATE,TRIGGER'))) "
+                    "AND NOT pg_catalog.has_table_privilege('jous_runtime','public.alembic_version',"
+                    "'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES')"))
+                if unrelated_safe is not True:
+                    raise DatabaseUnavailable("Unsafe runtime database configuration")
     except Exception:
         raise DatabaseUnavailable("Runtime database safety check failed") from None
 
@@ -172,13 +175,22 @@ class Database:
         self.engine: AsyncEngine | None = None
         self.session_factory: async_sessionmaker[AsyncSession] | None = None
         if settings.database_url is not None:
+            # Deterministic authority/transport gates precede engine construction.
+            if settings.environment == 'production':
+                step7_execution_contract.load_final_contract()
+                try:
+                    connect_args = runtime_transport.connection_arguments(settings)
+                except runtime_transport.TransportRejected:
+                    raise DatabaseUnavailable('Runtime transport configuration rejected') from None
+            else:
+                connect_args = {"timeout": self.timeout_seconds}
             url = make_url(settings.database_url.get_secret_value()).set(
                 drivername="postgresql+asyncpg")
             # Small fixed pool per API process. No overflow or eager checkout.
             self.engine = create_async_engine(
                 url, pool_size=2, max_overflow=0,
                 pool_timeout=self.timeout_seconds, pool_pre_ping=True,
-                connect_args={"timeout": self.timeout_seconds},
+                connect_args=connect_args,
                 echo=False, hide_parameters=True)
             self.session_factory = async_sessionmaker(
                 self.engine, expire_on_commit=False, autoflush=False)

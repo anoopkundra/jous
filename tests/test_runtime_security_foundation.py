@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from sqlalchemy import text
 from uuid import uuid4
 from alembic import command
 from alembic.config import Config
@@ -319,8 +320,9 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             result = MagicMock()
             result.mappings.return_value.all.return_value = [evidence]
             connection.execute.return_value = result
+            connection.scalar.return_value = 'pg_catalog, pg_temp'
             self.assertEqual((await runtime_temp_evidence(connection))['classification'], expected)
-            connection.execute.assert_awaited_once()
+            self.assertEqual(connection.execute.await_count, 2)
 
     async def test_temp_elevations_and_ambiguous_provenance_fail_closed(self):
         from jous_api.database import classify_runtime_temp, runtime_temp_evidence
@@ -340,6 +342,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             result = MagicMock()
             result.mappings.return_value.all.return_value = rows
             connection.execute.return_value = result
+            connection.scalar.return_value = 'pg_catalog, pg_temp'
             with self.assertRaises(DatabaseUnavailable):
                 await runtime_temp_evidence(connection)
         connection = AsyncMock()
@@ -382,7 +385,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
 
     def complete_connection(self):
         connection = AsyncMock()
-        connection.scalar.return_value = True
+        connection.scalar.side_effect = lambda sql: 'pg_catalog, pg_temp' if str(sql) == "SELECT pg_catalog.current_setting('search_path')" else True
         commands = {"users": ("SELECT",), "organization_memberships": ("SELECT",),
                     "organizations": ("SELECT", "UPDATE"), "projects": ("SELECT", "INSERT", "UPDATE")}
         policies = []
@@ -399,7 +402,13 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
                 add(f'jous_{table}_helper_read','r',True,50,'{SYNTHETIC TRUE}',None)
         import copy
         self.addCleanup(patch.stopall)
-        patch.object(step7_catalog,'APPROVED_POLICY_CONTRACT',copy.deepcopy(policies)).start()
+        # Guard-orchestration fixture only; real frozen-authority integration is
+        # covered independently in test_runtime_readiness_remediation.py.
+        expected_policies = copy.deepcopy(policies)
+        async def policy_guard(connection):
+            observed = (await connection.execute(text(step7_catalog.POLICY_SQL))).mappings().all()
+            step7_catalog.verify_policy_records(observed, expected_policies)
+        patch('jous_api.database.verify_runtime_policy_authority', side_effect=policy_guard).start()
         privileges = [('projects','status','jous_runtime','UPDATE',False),
                       ('projects','organization_id','jous_runtime','UPDATE',False),
                       ('users','auth_subject','jous_runtime','SELECT',False),
@@ -410,7 +419,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         privilege_result.all.return_value = privileges
         temp_result = MagicMock()
         temp_result.mappings.return_value.all.return_value = [self.temp_evidence()]
-        connection.execute.side_effect = [temp_result, policy_result, privilege_result]
+        connection.execute.side_effect = [MagicMock(), MagicMock(), temp_result, policy_result, privilege_result]
         return connection, policies, privileges
 
     async def test_expected_catalog_and_acl_contract_passes(self):
@@ -420,7 +429,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             # Rebuild the ordered results to exercise real validate_runtime,
             # including classification, for both accepted platform baselines.
             results = list(temp_result)
-            results[0].mappings.return_value.all.return_value = [self.temp_evidence(public)]
+            results[2].mappings.return_value.all.return_value = [self.temp_evidence(public)]
             connection.execute.side_effect = results
             await validate_runtime(connection)
 
@@ -458,7 +467,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_wrong_role_bypass_membership_or_dirty_baseline_fail_safe(self):
         for results in ([False], [True, False], [True, True, False]):
             connection = AsyncMock()
-            connection.scalar.side_effect = results
+            connection.scalar.side_effect = ['pg_catalog, pg_temp', *results]
             with self.assertRaises(DatabaseUnavailable) as error:
                 await validate_runtime(connection)
             self.assertEqual(str(error.exception), "Runtime database safety check failed")
