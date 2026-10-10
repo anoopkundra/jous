@@ -1,0 +1,16 @@
+# Step 7 pinned evidence must reproduce exact reviewed bytes across checkouts.
+tests/fixtures/step7_pg17_11_catalog/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+services/api/infrastructure/step7_public_compat_manifest.json text eol=lf
+services/api/infrastructure/step7_realtime_authorize_amendment.json text eol=lf
+services/api/infrastructure/step7_operator514_amendment.json text eol=lf
+services/api/infrastructure/step7_policy_template_contract.json text eol=lf
+services/api/infrastructure/step7_public_compat_amendment_candidate.json text eol=lf
+services/api/infrastructure/runtime_roles.sql text eol=lf
+services/api/migrations/versions/0001_identity_project.py text eol=lf
+services/api/migrations/versions/0002_runtime_rls.py text eol=lf
+docs/decisions/JOUS.CORE.1A.step7-managed-readonly-candidate.json text eol=lf
+docs/decisions/JOUS.CORE.1A.step7-realtime-authorize-candidate.json text eol=lf
+docs/decisions/JOUS.CORE.1A.step7-post0002-policy-golden-candidate.json text eol=lf
+# Preserve the pinned upstream pg_config.h EOF blank line verbatim.
+tests/fixtures/step7_pg17_11_catalog/include/server/pg_config.h whitespace=blank-at-eol,space-before-tab,cr-at-eol,-blank-at-eof
+.gitattributes text eol=lf

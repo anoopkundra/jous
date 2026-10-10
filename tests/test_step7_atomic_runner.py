@@ -1,5 +1,6 @@
 """Network-free operator contracts; fake catalogs are not live PostgreSQL evidence."""
 import asyncio
+from step7_catalog_observations import observations as builtin_observations
 from contextlib import redirect_stdout
 import copy
 import importlib.util
@@ -12,7 +13,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pathlib import Path
 import ssl
-import sqlite3
 import re
 import tempfile
 import sys
@@ -37,6 +37,60 @@ runner.load_dependencies()
 runner._VERIFIED_SOURCES = {p.relative_to(ROOT).as_posix(): p.read_bytes().replace(b'\r\n',b'\n')
     for directory in ('services/api/src/jous_api','services/api/migrations')
     for p in (ROOT/directory).rglob('*.py')}
+# Only test data receives synthetic M1 values; production retains the unresolved base.
+_BASE_LOAD = runner.load_public_manifest
+_BASE_PARSE = runner.parse_manifest
+
+def synthetic_manifest():
+    return _BASE_LOAD()  # Mandatory reviewed M1 composition; no synthetic boolean injection.
+runner.load_public_manifest = synthetic_manifest
+
+runner._VERIFIED_SOURCES['services/api/infrastructure/step7_realtime_authorize_amendment.py'] = (ROOT/'services/api/infrastructure/step7_realtime_authorize_amendment.py').read_bytes().replace(b'\r\n',b'\n')
+_CATALOG_MODULE = runner.catalog_contract()
+_AUTHORIZE_MODULE = runner.authorize_contract()
+
+from functools import lru_cache
+
+@lru_cache(maxsize=2)
+def final_material(migrated=False):
+    f=runner.execution_contract();contract=f.load_final_contract();d=f._read(contract,f.ApprovedFinalContract)
+    tables=[];columns=[];actual_builtins=builtin_observations()
+    for index,e in enumerate(d['relations']):
+        table=dict({k:v for k,v in e.items() if k!='columns'},oid=200+index,
+            namespace_oid=2200,owner_oid=100,relrowsecurity=True,
+            relforcerowsecurity=migrated,inheritance=False)
+        tables.append(table)
+        columns.extend(dict(c,attrelid=table['oid']) for c in e['columns'])
+    _,statements=runner.migration_contract();helpers=[]
+    for h in d['helpers']:
+        body=next(q for q in statements if q.startswith('CREATE FUNCTION jous_security.'+h['name']+'(')).split('$function$')[1]
+        helpers.append(dict(oid=301 if h['name']=='resolve_user' else 302,namespace_oid=300,
+            schema='jous_security',namespace_owner='postgres',nspowner=100,proname=h['name'],proowner=50,
+            prolang=14,language='sql',args=h['args'],returns=h['returns'],proargnames=h['argnames'],
+            proargmodes=None,proallargtypes=None,prokind='f',prosecdef=True,provolatile='s',proparallel='u',
+            proisstrict=False,proleakproof=False,proretset=False,provariadic=0,pronargdefaults=0,
+            no_defaults=True,text_body=True,proconfig=['search_path=pg_catalog, pg_temp'],probin=None,prosrc=body))
+    return {f.TARGET_SQL:[dict(d['target']['database'],server_version='17.11',server_version_num=170011)],
+        f.ROLE_SQL:[dict(oid=100,rolname='postgres'),dict(oid=51,rolname='jous_runtime'),dict(oid=50,rolname='jous_security_reader')],
+        f.TYPE_SQL:actual_builtins['types'],f.FUNCTION_SQL:actual_builtins['functions'],
+        f.OPERATOR_SQL:actual_builtins['operators'],f.COLLATION_SQL:actual_builtins['collations'],
+        f.RELATION_SQL:tables,f.COLUMN_SQL:columns,f.CREATED_SQL:helpers,
+        f.CREATED_ACL_SQL:[dict(proname=h['name'],grantor=50,grantee=g,privilege_type='EXECUTE',is_grantable=False) for h in d['helpers'] for g in (50,51)],
+        f.CREATED_SCHEMA_ACL_SQL:[dict(grantee=g,privilege_type='USAGE',is_grantable=False) for g in (50,51)]}
+
+
+def synthetic_policies(module):
+    f=runner.execution_contract();contract=f.load_final_contract()
+    material=final_material(False)
+    query=lambda c,sql,params=None:copy.deepcopy(material[sql])
+    existing=f.freeze_pre_migration_bindings(None,contract,query)
+    created=f.verify_created_security_objects(None,contract,existing,query)
+    expected=f._read(f.instantiate_policy_expectations(contract,existing,created),f.ExpectedPolicySet)
+    return [dict(row,policy_oid=1000+i) for i,row in enumerate(expected)]
+
+_CATALOG_MODULE.APPROVED_POLICY_CONTRACT = synthetic_policies(runner.migration_contract()[0])
+runner.catalog_contract = lambda: _CATALOG_MODULE
+
 PIPELINE = runner.pipeline
 APPROVED_SHA = '1'*40
 SECRET = 'password-token-DO-NOT-PRINT'
@@ -61,9 +115,126 @@ class Result:
     def all(self): return self.value
 
 
+class PublicCatalog:
+    """Catalog rows synthesized from the reviewed snapshot, not live expected learning.
+
+    Mutations affect only observed rows. The production collector, schema validator
+    and comparison run unchanged; no database/network calls are made.
+    """
+    def __init__(self):
+        self.manifest=runner.public_contract()
+        self.supplement=copy.deepcopy(runner.authorize_contract().load_amendment()['targeted_contract'])
+        self.relations=copy.deepcopy(self.manifest['relations'])
+        self.routines=copy.deepcopy(self.manifest['routines'])
+        self.bindings=copy.deepcopy(self.manifest['rls_auto_enable']['bindings'])
+        self.events=[]
+        self.structural=copy.deepcopy({k:self.manifest[k] for k in ('target_contract','view_structures','default_structures','referent_bindings','dependency_contract')})
+        self.function_sources={141:'int4mul',13616:'plpgsql_call_handler',13617:'plpgsql_inline_handler',13618:'plpgsql_validator'}
+        self.types={}
+        for e in self.routines:
+            for t in e['identity_input_types']+[e['return_type']]+(e['all_argument_types'] or []):
+                self.type_oid(t)
+            if e['variadic_type']: self.type_oid(e['variadic_type'])
+        for e in self.relations:
+            for col in e['columns']: self.type_oid(col['type'])
+
+    def type_oid(self,t):
+        key=(t['schema'],t['name'])
+        if key not in self.types:self.types[key]=len(self.types)+1
+        return self.types[key]
+
+    def result(self,s,params):
+        for key,(sql,parameters) in _AUTHORIZE_MODULE.PROJECTIONS.items():
+            if s==sql:
+                if key in ('language_binding','namespace_binding'):
+                    index=0 if key=='language_binding' else 1
+                    return copy.deepcopy(self.supplement['dependency_bindings'][index]['rows'])
+                return copy.deepcopy(self.supplement[key])
+        if s==runner._DATABASE_QUERY:return [self.structural['target_contract']['database']]
+        if s==runner._VIEW_QUERY:
+            return [{k:v for k,v in e.items() if not k.endswith('_sha256')} for e in self.structural['view_structures']]
+        if s==runner._DEFAULT_QUERY:
+            return [{k:v for k,v in e.items() if not k.endswith('_sha256')} for e in self.structural['default_structures']]
+        if s==runner._DEPENDENCY_QUERY:
+            return [e for e in self.structural['dependency_contract']['edges'] if
+                e['classid']==params['classid'] and e['objid'] in params['ids']]
+        for kind,query in runner._STRUCTURAL_QUERIES.items():
+            if s==query:
+                result=copy.deepcopy(self.structural['referent_bindings'][kind])
+                if kind=='functions':
+                    for index,e in enumerate(result):
+                        original=self.manifest['referent_bindings']['functions'][index % len(self.manifest['referent_bindings']['functions'])]
+                        if original['oid'] in self.function_sources:
+                            source=self.function_sources[original['oid']]
+                        else:
+                            source=next(r.get('source',r.get('entry_point_symbol')) for r in self.routines
+                                if r['schema']==original['schema'] and r['name']==original['proname'])
+                        e.pop('prosrc_sha256');e['prosrc']=source
+                return result
+        if 'SELECT t.oid,n.nspname AS schema,t.typname AS name' in s:
+            return [dict(oid=oid,schema=t[0],name=t[1]) for t,oid in self.types.items()]
+        if 'SELECT p.oid,n.nspname AS schema,p.proname AS name' in s:
+            result=[]
+            for oid,e in enumerate(self.routines,1000):
+                ext=e['extension_membership'] or {}
+                result.append(dict(oid=oid,schema=e['schema'],name=e['name'],display_args='unused',
+                    kind=e['routine_kind'],input_types=[self.type_oid(t) for t in e['identity_input_types']],
+                    all_types=None if e['all_argument_types'] is None else [self.type_oid(t) for t in e['all_argument_types']],
+                    proargnames=e['parameter_names'],modes=e['parameter_modes'],
+                    pronargdefaults=e['default_argument_count'],
+                    return_type=self.type_oid(e['return_type']),proretset=e['returns_set'],
+                    provariadic=self.type_oid(e['variadic_type']) if e['variadic_type'] else 0,
+                    prosrc=e.get('source',e.get('entry_point_symbol')),parsed_sql_body=e['parsed_sql_body'],
+                    probin=e.get('library_reference'),proconfig=e['proconfig'],prosecdef=e['security_definer'],
+                    volatility=e['volatility'],parallel=e['parallel'],proisstrict=e['strict'],
+                    proleakproof=e['leakproof'],lanname=e['language'],owner=e['owner'],
+                    extname=ext.get('name'),extversion=ext.get('version'),**e['owner_attributes']))
+            return result
+        if 'SELECT c.oid,n.nspname AS schema,c.relname AS name' in s:
+            return [dict(oid=oid,schema=e['schema'],name=e['name'],kind=e['object_type'],
+                owner=e['owner'],reloptions=e['reloptions'],extname=(e['extension_membership'] or {}).get('name'),
+                extversion=(e['extension_membership'] or {}).get('version'))
+                for oid,e in enumerate(self.relations,2000)]
+        if 'SELECT grantor.rolname AS grantor' in s:
+            e=self.routines[params['oid']-1000] if 'FROM pg_catalog.pg_proc obj' in s else self.relations[params['oid']-2000]
+            return e['public_acl']
+        if 'SELECT attname AS name,atttypid AS type_oid' in s:
+            return [dict(name=e['name'],type_oid=self.type_oid(e['type']),
+                         type_modifier=e['type_modifier'],not_null=e['not_null'])
+                    for e in self.relations[params['oid']-2000]['columns']]
+        if 'SELECT e.evtname AS name' in s:return self.bindings
+        if 'SELECT ev_action::pg_catalog.text AS nodes' in s:return [dict(nodes=self.relations[params['oid']-2000].get('view_nodes',''))]
+        return None
+
+    def execute(self,sql,params=None):
+        s=str(sql);self.events.append(s)
+        if s.startswith('SET LOCAL search_path'):return Result([])
+        result=self.result(s,params or {})
+        if result is None:raise AssertionError('Unmodelled PUBLIC catalog query')
+        return Result(copy.deepcopy(result))
+
+    def scalar(self,sql,params=None):
+        self.events.append(str(sql))
+        if str(sql)=='SHOW server_version':return self.structural['target_contract']['server_version']
+        if str(sql)=='SHOW server_version_num':return str(self.structural['target_contract']['server_version_num'])
+        if 'has_schema_privilege(:role,:schema' in str(sql):
+            entries=[e for e in self.routines+self.relations if e['schema']==params['schema']]
+            return entries[0]['schema_usage'][params['role']]
+        raise AssertionError('Unmodelled PUBLIC scalar')
+
+    def in_transaction(self):return True
+
+    def routine_effective(self):
+        return [dict(nspname=e['schema'],proname=e['name'],args='unused',
+                     input_types=e['identity_input_types'],prokind=e['routine_kind'],role=role,
+                     allowed=True,grantable=False)
+                for e in self.routines for role in ('jous_runtime','jous_security_reader')]
+
+
 class Catalog:
     """Independent shaped catalog fixtures; production assertions are not mocked."""
     def __init__(self):
+        self.public=PublicCatalog()
         self.migrated = False
         self.temp = False
         self.events = []
@@ -86,6 +257,27 @@ class Catalog:
         if s == runner.REVOKE: self.temp = False; return Result([])
         for marker,value in self.overrides.items():
             if marker in s: return Result(copy.deepcopy(value))
+        material=final_material(self.migrated)
+        if s in material:return Result(copy.deepcopy(material[s]))
+        public=self.public.result(s,params or {})
+        if public is not None:return Result(copy.deepcopy(public))
+        if 'SELECT d.datname FROM pg_catalog.pg_database' in s:return Result([])
+        if 'SELECT n.nspname,r.rolname,a.privilege_type' in s:
+            return Result([dict(nspname='jous_security',rolname=role,privilege_type='USAGE',is_grantable=False)
+                for role in ('jous_runtime','jous_security_reader')] if self.migrated else [])
+        if 'SELECT n.nspname,c.relname,att.attname,r.rolname' in s:
+            return Result([dict(nspname='public',relname=t,attname=col,rolname=role,privilege_type=p,is_grantable=False)
+                for role,contract in (('jous_runtime',runner.RUNTIME),('jous_security_reader',runner.READER))
+                for t,privs in contract.items() for p,cols in privs.items() for col in cols] if self.migrated else [])
+        if 'SELECT n.nspname,p.proname,r.rolname,' in s:
+            return Result([dict(nspname='jous_security',proname=n,args=args,rolname=role,privilege_type='EXECUTE',is_grantable=False)
+                for n,args in (('resolve_user','text, text'),('organization_is_active','uuid'))
+                for role in ('jous_runtime','jous_security_reader')] if self.migrated else [])
+        if 'SELECT att.attname FROM' in s:return Result([])
+        if 'SELECT n.nspname,r.rolname FROM pg_catalog.pg_namespace' in s:
+            return Result([dict(nspname=schema,rolname=role)
+                for schema in (('public','jous_security') if self.migrated else ('public',))
+                for role in ('jous_runtime','jous_security_reader')])
         if 'm.roleid,m.member,m.grantor' in s:
             result = [copy.deepcopy(self.original)]
             if self.temp:
@@ -112,21 +304,8 @@ class Catalog:
         if 'SELECT c.relname,r.rolname AS owner' in s:
             return Result([dict(relname=t,owner='postgres',relrowsecurity=True,
                 relforcerowsecurity=self.migrated) for t in sorted(runner.TABLES)])
-        if 'SELECT tablename,policyname' in s:
-            result=[]
-            if self.migrated:
-                for t,commands in self.module.COMMANDS.items():
-                    g=self.module.GUARDS[t]
-                    result.append(dict(tablename=t,policyname=f'jous_{t}_guard',permissive='RESTRICTIVE',
-                        roles=['jous_runtime'],cmd='ALL',qual=g,with_check=g))
-                    for cmd in commands:
-                        result.append(dict(tablename=t,policyname=f'jous_{t}_{cmd.lower()}',permissive='PERMISSIVE',
-                            roles=['jous_runtime'],cmd=cmd,qual=None if cmd=='INSERT' else g,
-                            with_check=g if cmd in ('INSERT','UPDATE') else None))
-                    if t in ('users','organizations'):
-                        result.append(dict(tablename=t,policyname=f'jous_{t}_helper_read',permissive='PERMISSIVE',
-                            roles=['jous_security_reader'],cmd='SELECT',qual='true',with_check=None))
-            return Result(result)
+        if 'SELECT p.oid AS policy_oid' in s:
+            return Result(synthetic_policies(self.module) if self.migrated else [])
         if 'SELECT n.nspname,p.proname,r.rolname AS owner' in s:
             return Result([dict(nspname='jous_security',proname=n,owner='jous_security_reader')
                 for n in ('organization_is_active','resolve_user')] if self.migrated else [])
@@ -135,6 +314,11 @@ class Catalog:
                 privilege_type='SELECT',is_grantable=False)] if self.migrated else [])
         if 'SELECT n.nspname,c.relname,a.attname,r.role,p.priv' in s:
             result=[]
+            for e in self.public.relations:
+                for role in ('jous_runtime','jous_security_reader'):
+                    result.extend(dict(nspname=e['schema'],relname=e['name'],attname=col['name'],
+                        role=role,priv=p,allowed=p=='SELECT',grantable=False)
+                        for col in e['columns'] for p in ('SELECT','INSERT','UPDATE','REFERENCES'))
             for role,contract in (('jous_runtime',runner.RUNTIME),('jous_security_reader',runner.READER)):
                 for t,perms in contract.items():
                     for p,cols in perms.items():
@@ -144,18 +328,18 @@ class Catalog:
                 role='jous_runtime',priv='SELECT',allowed=self.migrated,grantable=False))
             return Result(result)
         if 'has_function_privilege' in s:
-            return Result([dict(nspname='jous_security',proname=n,args=args,prokind='f',role=role,
+            return Result(self.public.routine_effective()+([dict(nspname='jous_security',proname=n,args=args,prokind='f',role=role,
                 allowed=True,grantable=role=='jous_security_reader')
                 for n,args in (('resolve_user','text, text'),('organization_is_active','uuid'))
-                for role in ('jous_runtime','jous_security_reader')] if self.migrated else [])
-        if 'pg_catalog.oidvectortypes' in s:
+                for role in ('jous_runtime','jous_security_reader')] if self.migrated else []))
+        if 'p.proargtypes::pg_catalog.oid[] AS args' in s:
             result=[]
             for n in ('resolve_user','organization_is_active'):
                 create=next(s for s in self.statements if s.startswith('CREATE FUNCTION jous_security.'+n+'('))
-                result.append(dict(nspname='jous_security',proargnames=['p_issuer','p_subject'] if n=='resolve_user'
+                result.append(dict(nspname='jous_security',namespace_oid=300,routine_oid=301 if n=='resolve_user' else 302,proargnames=['p_issuer','p_subject'] if n=='resolve_user'
                     else ['p_organization_id'],proargmodes=None,proallargtypes=None,pronargdefaults=0,
-                    no_defaults=True,text_body=True,proname=n,args='text, text' if n=='resolve_user' else 'uuid',
-                    returns='uuid' if n=='resolve_user' else 'boolean',proowner=50,prosecdef=True,
+                    no_defaults=True,text_body=True,proname=n,args=[25,25] if n=='resolve_user' else [2950],
+                    returns=2950 if n=='resolve_user' else 16,proowner=50,prosecdef=True,
                     provolatile='s',proparallel='u',proconfig=['search_path=pg_catalog, pg_temp'],
                     prosrc=create.split('$function$')[1],lanname='sql',proisstrict=False,prokind='f'))
             return Result(result)
@@ -177,6 +361,8 @@ class Catalog:
 
     def scalar(self, sql, params=None):
         s=str(sql)
+        if s in ('SHOW server_version','SHOW server_version_num'):return self.public.scalar(sql,params)
+        if 'has_schema_privilege(:role,:schema' in s:return self.public.scalar(sql,params)
         if 'pg_try_advisory_xact_lock' in s: return True
         if s.startswith('SELECT count(*)'): return self.overrides.get('count',0)
         raise AssertionError('Unmodelled scalar')
@@ -219,6 +405,478 @@ async def execute_test(engine, work):
         return await runner.execute(engine)
 
 
+class PublicCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.c=PublicCatalog()
+        self.manifest=runner.load_public_manifest()
+
+    def check(self):
+        return runner.verify_public_compatibility(self.c)
+
+    def reject_routine(self,field,value,language=None):
+        entry=next(e for e in self.c.routines if language is None or e['language']==language)
+        entry[field]=value
+        with self.assertRaises(runner.Stop):self.check()
+
+    def test_reviewed_full_catalog_and_capabilities(self):
+        result=self.check()
+        capabilities=result['routines']
+        self.assertEqual(len(capabilities),97)
+        self.assertEqual(len(result['relations']),2)
+        self.assertTrue(all(e['object_acl_authority']=='PUBLIC_SELECT' and
+            e['usable_object_capability']==dict(jous_runtime='SCHEMA_LOOKUP_BLOCKED',
+                jous_security_reader='SCHEMA_LOOKUP_BLOCKED') for e in result['relations'].values()))
+        self.assertEqual(len(self.manifest['relations']),2)
+        self.assertEqual(sum(e['language']=='c' for e in self.manifest['routines']),48)
+        self.assertEqual(sum(e['language'] in ('sql','plpgsql') for e in self.manifest['routines']),48)
+        callback=next(e for e in self.manifest['routines'] if e['name']=='rls_auto_enable')
+        self.assertEqual(capabilities[runner.routine_identity(callback)]['usable_object_capability'],
+            dict(jous_runtime='REVIEWED_EVENT_CALLBACK_PUBLIC_ACL',
+                 jous_security_reader='REVIEWED_EVENT_CALLBACK_PUBLIC_ACL'))
+        for e in self.manifest['routines']:
+            if e['schema']=='extensions' and e['execution_context']=='ordinary_function':
+                self.assertEqual(capabilities[runner.routine_identity(e)]['usable_object_capability'],
+                    dict(jous_runtime='SCHEMA_LOOKUP_BLOCKED',jous_security_reader='SCHEMA_LOOKUP_BLOCKED'))
+        self.assertFalse(any('EXPLAIN' in s or 'PREPARE' in s for s in self.c.events))
+
+    def test_pinned_manifest_bytes_and_counts(self):
+        b=(ROOT/runner.MANIFEST_PATH).read_bytes()
+        self.assertEqual(hashlib.sha256(b).hexdigest(),runner.MANIFEST_SHA)
+        with self.assertRaisesRegex(runner.Stop,'MANIFEST_STRUCTURAL_SCHEMA'): runner.parse_manifest(b)
+
+    def test_manifest_hash_mutation(self):
+        with patch.object(Path,'read_bytes',return_value=(ROOT/runner.MANIFEST_PATH).read_bytes()+b' '):
+            with self.assertRaisesRegex(runner.Stop,'MANIFEST_HASH'):runner.load_public_manifest()
+
+    def test_manifest_closed_schema(self):
+        import json
+        cases=[]
+        m=copy.deepcopy(self.manifest);m['unknown_security_rule']=True;cases.append(m)
+        m=copy.deepcopy(self.manifest);m['manifest_version']=3;cases.append(m)
+        m=copy.deepcopy(self.manifest);m['manifest_version']=True;cases.append(m)
+        m=copy.deepcopy(self.manifest);del m['routines'];cases.append(m)
+        m=copy.deepcopy(self.manifest);m['routines'][0]['trusted']=True;cases.append(m)
+        m=copy.deepcopy(self.manifest);del m['routines'][0]['owner'];cases.append(m)
+        m=copy.deepcopy(self.manifest);m['relations'][0]['schema_usage']['jous_runtime']='false';cases.append(m)
+        m=copy.deepcopy(self.manifest);m['routines'][0]['owner']='x\u202ey';cases.append(m)
+        for m in cases:
+            with self.subTest(keys=list(m)),self.assertRaises(runner.Stop):
+                runner.parse_manifest(json.dumps(m).encode())
+
+    def test_manifest_duplicate_keys_and_nonfinite(self):
+        b=(ROOT/runner.MANIFEST_PATH).read_bytes()
+        for malformed in (b.replace(b'"manifest_version":2',b'"manifest_version":1,"manifest_version":1'),
+                          b.replace(b'"manifest_version":2',b'"manifest_version":NaN'),
+                          b.replace(b'"manifest_version":2',b'"manifest_version":Infinity')):
+            with self.subTest(value=malformed[:15]),self.assertRaises(runner.Stop):runner.parse_manifest(malformed)
+
+    def test_manifest_path_fixed_and_git_attested(self):
+        self.assertIn(runner.MANIFEST_PATH,runner.IDENTITY_PATHS)
+        self.assertEqual(runner.MANIFEST_PATH,'services/api/infrastructure/step7_public_compat_manifest.json')
+        with tempfile.TemporaryDirectory() as directory,patch.object(runner,'ROOT',Path(directory)):
+            with self.assertRaisesRegex(runner.Stop,'MANIFEST_PATH'):runner.load_public_manifest()
+
+    def test_complete_inventory_rejects_unknown_routine_not_in_manifest(self):
+        new=copy.deepcopy(self.c.routines[0]);new['name']='new_public_api'
+        self.c.routines.append(new)
+        with self.assertRaisesRegex(runner.Stop,'PUBLIC_ROUTINES_SET'):self.check()
+
+    def test_new_overload(self):
+        new=copy.deepcopy(self.c.routines[0]);new['identity_input_types']=[dict(schema='pg_catalog',name='text')]
+        self.c.routines.append(new)
+        with self.assertRaises(runner.Stop):self.check()
+
+    def test_public_wrapper_and_jous_created_routine(self):
+        for schema in ('public','jous_security','pgx'):
+            self.c=PublicCatalog();new=copy.deepcopy(self.c.routines[0])
+            new.update(schema=schema,name='unreviewed_wrapper',owner='postgres')
+            self.c.routines.append(new)
+            with self.subTest(schema=schema),self.assertRaises(runner.Stop):self.check()
+
+    def test_new_procedure(self):
+        self.reject_routine('routine_kind','p')
+
+    def test_missing_and_duplicate_routine(self):
+        for duplicate in (False,True):
+            self.c=PublicCatalog()
+            if duplicate:self.c.routines.append(copy.deepcopy(self.c.routines[0]))
+            else:self.c.routines.pop()
+            with self.subTest(duplicate=duplicate),self.assertRaises(runner.Stop):self.check()
+
+    def test_new_relation_and_sequence(self):
+        for kind in ('v','S','r'):
+            self.c=PublicCatalog();new=copy.deepcopy(self.c.relations[0])
+            new.update(schema='pgx',name='unexpected_public_object',object_type=kind)
+            self.c.relations.append(new)
+            with self.subTest(kind=kind),self.assertRaises(runner.Stop):self.check()
+
+    def test_missing_relation(self):
+        self.c.relations.pop()
+        with self.assertRaises(runner.Stop):self.check()
+
+    def test_relation_metadata_drift(self):
+        for field,value in (('owner','attacker'),('reloptions',['security_invoker=true']),
+                            ('object_type','m'),
+                            ('extension_membership',dict(name='other',version='1.11'))):
+            self.c=PublicCatalog();self.c.relations[0][field]=value
+            with self.subTest(field=field),self.assertRaises(runner.Stop):self.check()
+
+    def test_relation_column_identity_drift(self):
+        for field,value in (('name','replaced'),('type',dict(schema='pg_catalog',name='text')),
+                            ('type_modifier',10),('not_null',True)):
+            self.c=PublicCatalog();col=self.c.relations[0]['columns'][0]
+            if field=='type' and col[field]==value:value=dict(schema='pg_catalog',name='bool')
+            if field=='not_null':value=not col[field]
+            col[field]=value
+            with self.subTest(field=field),self.assertRaises(runner.Stop):self.check()
+
+    def test_public_acl_source_and_grant_option(self):
+        for kind in ('routines','relations'):
+            for field,value in (('grant_option',True),('grantor','attacker'),
+                                ('privilege','INSERT'),('grantee','jous_runtime')):
+                self.c=PublicCatalog();getattr(self.c,kind)[0]['public_acl'][0][field]=value
+                with self.subTest(kind=kind,field=field),self.assertRaises(runner.Stop):self.check()
+
+    def test_routine_metadata_drift(self):
+        changes=[('owner','attacker'),('return_type',dict(schema='pg_catalog',name='void')),
+            ('identity_input_types',[dict(schema='pg_catalog',name='uuid')]),
+            ('security_definer',True),('proconfig',['search_path=public']),
+            ('volatility','v'),('parallel','s'),('strict',True),('leakproof',True),
+            ('parameter_names',['rebound']),('parameter_modes',['o']),
+            ('default_argument_count',1),
+            ('parsed_sql_body',True),('source','SELECT true;')]
+        for field,value in changes:
+            self.c=PublicCatalog();e=next(e for e in self.c.routines if e['schema']=='auth')
+            if field in ('volatility','parallel','strict','leakproof') and e[field]==value:
+                value=not value if type(value) is bool else ('s' if field=='volatility' else 'u')
+            e[field]=value
+            with self.subTest(field=field),self.assertRaises(runner.Stop):self.check()
+
+    def test_extension_version_and_membership(self):
+        for value in (dict(name='pgcrypto',version='1.4'),dict(name='other',version='1.3'),None):
+            self.c=PublicCatalog()
+            self.reject_routine('extension_membership',value,language='c')
+
+    def test_c_library_and_symbol(self):
+        for field in ('library_reference','entry_point_symbol'):
+            self.c=PublicCatalog();self.reject_routine(field,'attacker',language='c')
+
+    def test_owner_security_posture_drift(self):
+        e=self.c.routines[0];e['owner_attributes']['rolsuper']=not e['owner_attributes']['rolsuper']
+        with self.assertRaises(runner.Stop):self.check()
+
+    def test_role_specific_schema_usage_drift(self):
+        for role in ('jous_runtime','jous_security_reader'):
+            for schema in ('auth','extensions','graphql_public','realtime','storage'):
+                self.c=PublicCatalog()
+                for e in self.c.routines+self.c.relations:
+                    if e['schema']==schema:e['schema_usage'][role]=True
+                with self.subTest(role=role,schema=schema),self.assertRaises(runner.Stop):self.check()
+
+    def test_rls_callback_body_return_owner_definer_config(self):
+        changes=[('source','BEGIN RETURN; END;'),('return_type',dict(schema='pg_catalog',name='void')),
+                 ('owner','supabase_admin'),('security_definer',False),('proconfig',['search_path=public'])]
+        for field,value in changes:
+            self.c=PublicCatalog();e=next(e for e in self.c.routines if e['name']=='rls_auto_enable')
+            e[field]=value
+            with self.subTest(field=field),self.assertRaises(runner.Stop):self.check()
+
+    def test_rls_callback_event_binding_drift(self):
+        for mode in ('additional','missing','event','enabled','tags','owner'):
+            self.c=PublicCatalog()
+            if mode=='additional':self.c.bindings.append({**self.c.bindings[0],'name':'second'})
+            elif mode=='missing':self.c.bindings=[]
+            elif mode=='event':self.c.bindings[0]['event']='sql_drop'
+            elif mode=='enabled':self.c.bindings[0]['enabled']='D'
+            elif mode=='tags':self.c.bindings[0]['tags'].append('ALTER TABLE')
+            else:self.c.bindings[0]['owner']='attacker'
+            with self.subTest(mode=mode),self.assertRaises(runner.Stop):self.check()
+
+    def test_direct_grants_cannot_hide_behind_public_compatibility(self):
+        for role in ('jous_runtime','jous_security_reader'):
+            for marker,entry in (
+                ('SELECT n.nspname,c.relname,r.rolname,a.privilege_type',
+                 dict(nspname='extensions',relname='pg_stat_statements',rolname=role,
+                      privilege_type='SELECT',is_grantable=False)),
+                ('SELECT n.nspname,p.proname,r.rolname,',
+                 dict(nspname='auth',proname='uid',rolname=role,args='',privilege_type='EXECUTE',is_grantable=False)),
+                ('SELECT n.nspname,c.relname,att.attname,r.rolname',
+                 dict(nspname='extensions',relname='pg_stat_statements',attname='query',rolname=role,
+                      privilege_type='SELECT',is_grantable=False))):
+                c=Catalog();c.overrides[marker]=[entry]
+                with self.subTest(role=role,marker=marker),self.assertRaises(runner.Stop):
+                    runner.verify_grants(c,False)
+
+    def test_direct_database_schema_public_column_and_default_grants(self):
+        for marker,entry,reason in (
+            ('SELECT d.datname FROM pg_catalog.pg_database',dict(datname='postgres'),'DIRECT_DATABASE_ACL'),
+            ('SELECT n.nspname,r.rolname,a.privilege_type',dict(nspname='public',rolname='jous_runtime',privilege_type='CREATE',is_grantable=False),'DIRECT_SCHEMA_ACL'),
+            ('SELECT att.attname FROM',dict(attname='query'),'PUBLIC_COLUMN_ACL'),
+            ('SELECT d.oid,a.grantee',dict(oid=999,grantee=0,privilege_type='EXECUTE',is_grantable=False),'DEFAULT_PRIVILEGES')):
+            c=Catalog();c.overrides[marker]=[entry]
+            with self.subTest(marker=marker),self.assertRaisesRegex(runner.Stop,reason):
+                runner.verify_grants(c,False)
+            self.assertTrue(any(marker in sql for sql in c.events))
+
+    def test_baseline_and_migrated_atomic_pipeline(self):
+        c=Catalog()
+        runner.pipeline(c,migrate=lambda c:setattr(c,'migrated',True))
+        self.assertFalse(c.temp)
+        self.assertEqual(c.events.count(runner.GRANT),1)
+        self.assertEqual(c.events.count(runner.REVOKE),1)
+
+    def test_public_drift_fails_before_temporary_membership(self):
+        c=Catalog();c.public.routines.append(copy.deepcopy(c.public.routines[0]))
+        with self.assertRaises(runner.Stop):runner.pipeline(c)
+        self.assertNotIn(runner.GRANT,c.events)
+
+    def test_manifest_failure_precedes_credential_access(self):
+        with (patch.object(runner,'repository_gate'),patch.object(runner,'trusted_launch_gate'),
+              patch.object(runner,'cached_jous_gate'),patch.object(runner,'load_public_manifest',
+                  side_effect=runner.Stop('MANIFEST_HASH')),
+              patch.object(runner.os.environ,'get',wraps=runner.os.environ.get) as credential,
+              patch.object(runner,'create_async_engine') as engine,redirect_stdout(io.StringIO())):
+            self.assertEqual(runner.main(['--confirm-managed-mutation',
+                '--approved-execution-sha',APPROVED_SHA]),1)
+        self.assertFalse(any(call.args[0] in ('JOUS_MIGRATION_DATABASE_URL','JOUS_DATABASE_URL')
+            for call in credential.call_args_list))
+        engine.assert_not_called()
+
+    def test_effective_public_capability_matrix_complete(self):
+        c=Catalog();c.overrides['p.prokind::pg_catalog.text AS prokind,r.role']=c.public.routine_effective()[:-1]
+        with self.assertRaisesRegex(runner.Stop,'CAPABILITY_INCOMPLETE'):runner.verify_routines(c,False)
+
+    def test_non_deparse_raw_drift(self):
+        for kind,field,category in (('view_structures','ev_action','VIEW_STRUCTURES'),
+                                   ('default_structures','raw_proargdefaults','DEFAULT_STRUCTURES')):
+            for node in ('RELABELTYPE','COERCEVIAIO','COERCETODOMAIN','DOMAINVALUE','ROWEXPR',
+                'ARRAYEXPR','SCALARARRAYOPEXPR','CASEEXPR','CASETESTEXPR','PARAM','VAR','FUNCEXPR',
+                'OPEXPR','AGGREF','WINDOWFUNC','SUBLINK','SQLVALUEFUNCTION','COLLATEEXPR',
+                'FIELDSELECT','FIELDSTORE','COALESCEEXPR','MINMAXEXPR','NULLTEST','BOOLEANTEST'):
+                self.c=PublicCatalog()
+                self.c.structural[kind][0][field]='{'+node+' :resulttype 999999 :resulttypmod 12}'
+                with self.subTest(kind=kind,node=node),self.assertRaisesRegex(runner.Stop,'STRUCTURAL_'+category+'_DRIFT'):
+                    self.check()
+                self.assertFalse(any(re.search(r'pg_get_|format_type|oidvectortypes|regtype|regclass|regprocedure',sql) for sql in self.c.events))
+
+    def test_finite_referent_and_dependency_drift(self):
+        mutations=[('types','typname','attacker'),('types','oid',999999),
+            ('functions','proname','attacker'),('functions','proconfig',['search_path=public']),
+            ('operators','implementation_oid',999999),('columns','atttypmod',77),
+            ('namespaces','nspowner',999999),('namespaces','nspname','attacker'),
+            ('extensions','extversion','9.9'),('languages','lanplcallfoid',999999),
+            ('collations','collprovider','i')]
+        for kind,field,value in mutations:
+            self.c=PublicCatalog();self.c.structural['referent_bindings'][kind][0][field]=value
+            with self.subTest(kind=kind,field=field),self.assertRaisesRegex(runner.Stop,'STRUCTURAL_'+kind.upper()):self.check()
+        for action in ('add','remove'):
+            self.c=PublicCatalog();edges=self.c.structural['dependency_contract']['edges']
+            if action=='remove':edges.pop()
+            else:edges.append({**edges[0],'refobjid':999999})
+            with self.subTest(action=action),self.assertRaisesRegex(runner.Stop,'STRUCTURAL_DEPENDENCIES_SET'):self.check()
+
+    def test_database_and_version_drift(self):
+        for field,value in dict(oid=99,datname='other',encoding=8,datlocprovider='c',
+            datcollate='C',datctype='C',datlocale='other',daticurules='new',datcollversion='999').items():
+            self.c=PublicCatalog();self.c.structural['target_contract']['database'][field]=value
+            with self.subTest(field=field),self.assertRaisesRegex(runner.Stop,'STRUCTURAL_DATABASE_DRIFT'):self.check()
+        self.c=PublicCatalog();self.c.structural['target_contract']['server_version']='17.12'
+        with self.assertRaisesRegex(runner.Stop,'STRUCTURAL_POSTGRES_VERSION'):self.check()
+
+    def test_manifest_v2_missing_duplicate_and_unknown_data(self):
+        import json
+        for category in ('types','functions','namespaces','languages','extensions','operators','collations','relations','columns'):
+            for action in ('missing','duplicate','unknown_key'):
+                m=copy.deepcopy(self.manifest);entries=m['referent_bindings'][category]
+                if action=='missing':entries.pop()
+                elif action=='duplicate':entries.append(copy.deepcopy(entries[0]))
+                else:entries[0]['unreviewed_semantics']=True
+                with self.subTest(category=category,action=action),self.assertRaisesRegex(runner.Stop,'MANIFEST_'):
+                    runner.parse_manifest(json.dumps(m).encode())
+
+    def test_operator_implementation_wal_layout_and_plpgsql_drift(self):
+        for category,oid,field,value in (
+            ('functions',141,'prosqlbody_present',True),
+            ('functions',141,'proretset',True),
+            ('operators',514,'oprresult',25),
+            ('types',17326,'typrelid',999999),
+            ('columns',17324,'attname','other'),
+            ('languages',13619,'laninline',999999)):
+            self.c=PublicCatalog();entries=self.c.structural['referent_bindings'][category]
+            e=next(e for e in entries if e.get('oid',e.get('attrelid'))==oid);e[field]=value
+            with self.subTest(category=category,field=field),self.assertRaisesRegex(runner.Stop,'STRUCTURAL_'+category.upper()+'_DRIFT'):self.check()
+
+    def test_structural_missing_duplicate_and_empty_database(self):
+        for category in ('types','functions','columns'):
+            for action in ('missing','duplicate'):
+                self.c=PublicCatalog();entries=self.c.structural['referent_bindings'][category]
+                if action=='missing':entries.pop()
+                else:entries.append(copy.deepcopy(entries[0]))
+                with self.subTest(category=category,action=action),self.assertRaisesRegex(runner.Stop,'STRUCTURAL_'+category.upper()+'_SET'):self.check()
+        self.c=PublicCatalog();original=self.c.result
+        with patch.object(self.c,'result',side_effect=lambda sql,params:[] if sql==runner._DATABASE_QUERY else original(sql,params)):
+            with self.assertRaisesRegex(runner.Stop,'STRUCTURAL_DATABASE_DRIFT'):self.check()
+
+    def test_builtin_implementation_source_drift(self):
+        self.c.function_sources[141]='unreviewed_int4mul'
+        with self.assertRaisesRegex(runner.Stop,'STRUCTURAL_FUNCTIONS_DRIFT'):self.check()
+
+    def test_no_native_formatters_in_production_collection(self):
+        self.check()
+        self.assertFalse(any(re.search(r'pg_get_|format_type|oidvectortypes|regtype|regclass|regprocedure|collation_actual_version',sql) for sql in self.c.events))
+
+    def test_catalog_collection_never_uses_shadowable_relation_or_type_names(self):
+        self.check()
+        for sql in self.c.events:
+            with self.subTest(sql=sql[:90]):
+                self.assertFalse(re.search(r'\b(?:FROM|JOIN)\s+pg_(?:proc|type|namespace|class|roles|attribute|rewrite|depend|extension|event_trigger)\b',sql))
+                self.assertFalse(re.search(r'::(?:text|oid|regclass|"char")\b',sql))
+
+
+# Independent wire expectations: installed asyncpg CHAROID uses its bytea codec.
+# SQL text projection changes the result type; production never decodes bytes.
+_DRIVER_CHAR_FIELDS = {
+ 'database': ('',{'datlocprovider':'i'}),
+ 'view': ('w',{'ev_type':'1','ev_enabled':'O'}),
+ 'types': ('t',{'typtype':'b','typcategory':'B','typalign':'c'}),
+ 'functions': ('p',{'prokind':'f','provolatile':'i','proparallel':'s'}),
+ 'operators': ('o',{'oprkind':'b'}),
+ 'collations': ('c',{'collprovider':'d'}),
+ 'relations': ('c',{'relkind':'v'}),
+ 'dependencies': ('',{'deptype':'i'}),
+}
+
+
+def char_query(kind):
+    return {'database':runner._DATABASE_QUERY,'view':runner._VIEW_QUERY,
+            'dependencies':runner._DEPENDENCY_QUERY}.get(kind,runner._STRUCTURAL_QUERIES.get(kind))
+
+
+def char_projection(alias,field):
+    qualified=(alias+'.' if alias else '')+field
+    return r'(?<![\w.])'+re.escape(qualified)+r'::pg_catalog\.text\s+AS\s+'+field+r'\b'
+
+
+class DriverCharCatalog(PublicCatalog):
+    """Inert driver model keyed to explicit SQL result projections, not a codec change."""
+    def __init__(self):
+        super().__init__();self.char_mutations={};self.before_projection=[]
+    def result(self,sql,params):
+        result=super().result(sql,params)
+        if result is None:return None
+        for kind,(alias,expected) in _DRIVER_CHAR_FIELDS.items():
+            if sql!=char_query(kind):continue
+            result=copy.deepcopy(result)
+            for index,row in enumerate(result):
+                for field,independent in expected.items():
+                    # First rows have independently specified baseline values; remaining
+                    # rows retain the reviewed catalog values while modeling wire types.
+                    value=independent if index==0 and (kind!='dependencies' or row['classid']==1247) else row[field]
+                    if (kind,field) in self.char_mutations and index==0:value=self.char_mutations[kind,field]
+                    wire=value.encode('ascii');self.before_projection.append(wire)
+                    row[field]=wire.decode('ascii') if re.search(char_projection(alias,field),sql) else wire
+            return result
+        return result
+
+
+class DriverRepresentationTests(unittest.TestCase):
+    def test_every_projection_casts_source_field_to_its_alias(self):
+        for kind,(alias,fields) in _DRIVER_CHAR_FIELDS.items():
+            for field in fields:
+                with self.subTest(kind=kind,field=field):
+                    self.assertRegex(char_query(kind),char_projection(alias,field))
+        # Existing internal-char array and complete PUBLIC scalar projections.
+        self.assertIn('p.proargmodes::pg_catalog.text[] AS parameter_modes',runner._DEFAULT_QUERY)
+        self.assertIn('p.proargmodes::pg_catalog.text[] AS modes',runner._STRUCTURAL_QUERIES['functions'])
+
+    def test_effective_routine_and_helper_projection_aliases(self):
+        c=Catalog();original=c.execute
+        def wire(sql,params=None):
+            result=original(sql,params)
+            if 'p.prokind::pg_catalog.text AS prokind,r.role' in str(sql):
+                cast=bool(re.search(char_projection('p','prokind'),str(sql)))
+                for row in result.value:row['prokind']='f' if cast else b'f'
+            return result
+        with patch.object(c,'execute',side_effect=wire):runner.verify_routines(c,False)
+        actual=next(sql for sql in c.events if 'p.prokind::pg_catalog.text AS prokind,r.role' in sql)
+        self.assertRegex(actual,char_projection('p','prokind'))
+        c.migrated=True;runner.verify_helpers(c,c.statements,{'jous_runtime':51,'jous_security_reader':50})
+        actual=next(sql for sql in c.events if 'p.prorettype AS returns' in sql)
+        for field in ('prokind','provolatile','proparallel'):self.assertRegex(actual,char_projection('p',field))
+
+    def test_driver_shaped_unchanged_baseline_passes(self):
+        c=DriverCharCatalog();runner.verify_structural_contract(c,c.manifest)
+        self.assertTrue(c.before_projection)
+        self.assertTrue(all(type(v) is bytes for v in c.before_projection))
+
+    def test_missing_cast_reproduces_bytes_rejection(self):
+        c=DriverCharCatalog();original=c.result
+        def uncast_result(sql,params):
+            result=original(sql,params)
+            if sql==runner._DATABASE_QUERY:
+                result[0]['datlocprovider']=b'i'
+            return result
+        with patch.object(c,'result',side_effect=uncast_result):
+            with self.assertRaisesRegex(runner.Stop,'^STRUCTURAL_DATABASE_DRIFT$'):
+                runner.verify_structural_contract(c,c.manifest)
+
+    def test_each_representative_char_drift_still_fails(self):
+        categories={'database':'DATABASE','view':'VIEW_STRUCTURES','dependencies':'DEPENDENCIES'}
+        for kind,(alias,fields) in _DRIVER_CHAR_FIELDS.items():
+            for field in fields:
+                c=DriverCharCatalog();c.char_mutations[kind,field]='x'
+                reason='STRUCTURAL_'+categories.get(kind,kind.upper())+('_SET' if kind=='dependencies' else '_DRIFT')
+                with self.subTest(kind=kind,field=field),self.assertRaisesRegex(runner.Stop,'^'+reason+'$'):
+                    runner.verify_structural_contract(c,c.manifest)
+
+
+class OidDomainTests(unittest.TestCase):
+    def setUp(self):self.manifest=runner.load_public_manifest()
+    def parse(self,data):
+        import json
+        return runner.parse_manifest(json.dumps(data).encode())
+    def test_all_required_reference_and_identity_domains(self):
+        for kind,required,optional in (
+            ('types',('oid','namespace_oid','typowner'),('typelem','typarray','typbasetype','typrelid','typcollation')),
+            ('functions',('oid','pronamespace','proowner','prolang','prorettype'),()),
+            ('namespaces',('oid','nspowner'),()),('languages',('oid','lanowner','lanplcallfoid'),('laninline','lanvalidator')),
+            ('language_names',('oid',),()),('extensions',('oid','extnamespace','extowner'),()),
+            ('operators',('oid','oprleft','oprright','oprresult','implementation_oid'),('oprcom','oprnegate','restriction_oid','join_oid')),
+            ('collations',('oid',),()),('relations',('oid','relowner','reltype'),('reloftype',)),
+            ('columns',('attrelid','atttypid'),('attcollation',))):
+            for field in required+optional:
+                for invalid in ((-1,True,4294967296) if field in optional else (-1,0,True,4294967296)):
+                    data=copy.deepcopy(self.manifest);data['referent_bindings'][kind][0][field]=invalid
+                    with self.subTest(kind=kind,field=field,value=invalid),self.assertRaisesRegex(runner.Stop,'MANIFEST_(OID_DOMAIN|STRUCTURAL_SCHEMA)'):
+                        self.parse(data)
+    def test_independent_column_and_dependency_negative_probes(self):
+        for field in ('classid','objid','refclassid','refobjid','objsubid','refobjsubid'):
+            for invalid in (-1,True):
+                data=copy.deepcopy(self.manifest);data['dependency_contract']['edges'][0][field]=invalid
+                reason='MANIFEST_SUBOBJECT_DOMAIN' if field.endswith('subid') else 'MANIFEST_OID_DOMAIN'
+                with self.subTest(field=field,value=invalid),self.assertRaisesRegex(runner.Stop,
+                    'MANIFEST_STRUCTURAL_SCHEMA' if type(invalid) is bool else reason):self.parse(data)
+        for field,invalid in [('attrelid',-1),('attrelid',0),('attnum',-1),('attnum',0),('attnum',32768)]:
+            data=copy.deepcopy(self.manifest);data['referent_bindings']['columns'][0][field]=invalid
+            with self.subTest(field=field,value=invalid),self.assertRaisesRegex(runner.Stop,
+                'MANIFEST_OID_DOMAIN' if field=='attrelid' else 'MANIFEST_SUBOBJECT_DOMAIN'):self.parse(data)
+    def test_array_and_structural_root_oid_domains(self):
+        for kind,key in [('view_structures','ev_class'),('default_structures','routine_oid')]:
+            data=copy.deepcopy(self.manifest);data[kind][0][key]=0
+            with self.subTest(kind=kind),self.assertRaisesRegex(runner.Stop,'MANIFEST_OID_DOMAIN'):self.parse(data)
+        data=copy.deepcopy(self.manifest);data['default_structures'][0]['input_type_oids'][0]=-1
+        with self.assertRaisesRegex(runner.Stop,'MANIFEST_OID_DOMAIN'):self.parse(data)
+    def test_reviewed_zero_sentinels_and_non_oid_negatives_preserved(self):
+        parsed=self.parse(self.manifest)
+        self.assertEqual(parsed,self.manifest)
+        self.assertEqual(parsed['referent_bindings']['types'][0]['typelem'],0)
+        self.assertEqual(parsed['referent_bindings']['operators'][0]['oprnegate'],0)
+        self.assertEqual(parsed['dependency_contract']['edges'][0]['objsubid'],0)
+        self.assertEqual(parsed['referent_bindings']['collations'][0]['collencoding'],-1)
+        self.assertTrue(any(e['typlen']==-1 for e in parsed['referent_bindings']['types']))
+        self.assertTrue(any(e['atttypmod']==-1 for e in parsed['referent_bindings']['columns']))
+
+
 class LocalGates(unittest.TestCase):
     def setUp(self):
         # Existing Git-gate fixtures test source identity, not the real checkout's
@@ -242,13 +900,14 @@ class LocalGates(unittest.TestCase):
 
     def test_import_and_help_never_connect(self):
         with patch('sqlalchemy.ext.asyncio.create_async_engine') as engine, patch('asyncpg.connect') as network:
-            spec.loader.exec_module(runner)
-            runner.load_dependencies()
-            runner._VERIFIED_SOURCES = {p.relative_to(ROOT).as_posix(): p.read_bytes().replace(b'\r\n',b'\n')
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+            fresh.load_dependencies()
+            fresh._VERIFIED_SOURCES = {p.relative_to(ROOT).as_posix(): p.read_bytes().replace(b'\r\n',b'\n')
                 for directory in ('services/api/src/jous_api','services/api/migrations')
                 for p in (ROOT/directory).rglob('*.py')}
             with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
-                runner.main(['--help'])
+                fresh.main(['--help'])
             self.assertEqual(e.exception.code,0)
             engine.assert_not_called(); network.assert_not_called()
 
@@ -421,8 +1080,8 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(runner.Stop): runner.verify_security(self.c,b)
     def test_wrong_helper_owner(self):
         b=self.migrated()
-        data=self.c.execute('SELECT p.proname,pg_catalog.oidvectortypes').all(); data[0]['proowner']=100
-        self.c.overrides['pg_catalog.oidvectortypes']=data
+        data=self.c.execute('p.proargtypes::pg_catalog.oid[] AS args').all(); data[0]['proowner']=100
+        self.c.overrides['p.proargtypes::pg_catalog.oid[] AS args']=data
         with self.assertRaisesRegex(runner.Stop,'HELPER_DEFINITION'): runner.verify_security(self.c,b)
     def test_helper_acl_public_missing_runtime_or_grant_option(self):
         for mode in ('public','missing_runtime','grant_option'):
@@ -446,79 +1105,45 @@ class CatalogTests(unittest.TestCase):
         self.c.overrides['SELECT c.relname,r.rolname AS owner']=data
         with self.assertRaisesRegex(runner.Stop,'TABLE_RLS'): runner.verify_security(self.c,b)
     def test_policy_names_roles_commands_expressions(self):
-        for field,value in (('policyname','unexpected'),('roles',['public']),('cmd','ALL'),
-                            ('permissive','RESTRICTIVE'),('qual','true')):
+        for field,value in (('policy_name','unexpected'),('role_oids',[0]),('command','d'),
+                            ('permissive',False),('using_tree','true')):
             with self.subTest(field=field):
                 self.c=Catalog(); b=self.migrated()
-                data=self.c.execute('SELECT tablename,policyname').all()
+                data=self.c.execute('SELECT p.oid AS policy_oid').all()
                 data[1][field]=value
-                self.c.overrides['SELECT tablename,policyname']=data
+                self.c.overrides['SELECT p.oid AS policy_oid']=data
                 with self.assertRaises(runner.Stop): runner.verify_security(self.c,b)
-    def test_unknown_policy_function_operator_type_and_statement_rejected(self):
-        for expression in ('evil()', 'OPERATOR(public.evil)(id)', "'x'::public.evil",
-            'pg_catalog.jous_security.organization_is_active(organization_id)',
-            "CAST('x' AS attacker.dangerous_type)", "'x'::attacker.dangerous_type",
-            'true; COMMIT', '"evil"()', 'true /* comment */'):
-            with self.subTest(expression=expression), self.assertRaises(runner.Stop):
-                runner.policy_structure(expression)
-
-    def test_unavailable_policy_structure_fails_closed(self):
-        for expr in (None,'', '(((true)', 'true false', "'unterminated"):
-            with self.subTest(expr=expr), self.assertRaises(runner.Stop): runner.policy_structure(expr)
-
-    def test_policy_verification_never_plans_or_executes_expressions(self):
-        baseline=self.migrated()
-        with patch.object(self.c,'scalar',side_effect=lambda sql,*a: 0 if str(sql).startswith('SELECT count(*)')
-                          else (_ for _ in ()).throw(AssertionError('planning not allowed'))):
-            runner.verify_security(self.c,baseline)
-        self.assertFalse(any('EXPLAIN' in sql for sql in self.c.events))
-
-    def test_policy_structural_attacks(self):
-        guard=self.c.module.GUARDS['organization_memberships']
-        attacks=[guard.replace('jous_security.organization_is_active','jous_security.wrong'),
-            guard.replace('organization_is_active(organization_id)','organization_is_active(id)'),
-            guard.replace('AND jous_security.organization_is_active(organization_id)',''),
-            guard+' AND jous_security.organization_is_active(organization_id)',
-            guard.replace(' AND ',' OR ',1), 'NOT ('+guard+')',
-            guard.replace('user_id =','organization_id =',1)]
-        expected=runner.policy_structure(guard)
-        for attack in attacks:
-            with self.subTest(attack=attack):
-                try: actual=runner.policy_structure(attack)
-                except runner.Stop: continue
-                self.assertNotEqual(actual,expected)
-
-    def test_safe_deparser_equivalences_preserve_structure(self):
-        for expected,actual in (
-            ("status = 'active'", "((status)::text = 'active'::text)"),
-            ("role IN ('owner','member')", "((role)::text = ANY ((ARRAY['owner'::character varying,'member'::character varying])::text[]))"),
-            ("CAST(pg_catalog.current_setting('jous.user_id',true) AS pg_catalog.uuid)",
-             "(current_setting('jous.user_id'::text,true))::uuid"),
-            ('NULL','NULL::uuid'),
-            ('true AND (false AND true)','((true AND false) AND true)')):
-            self.assertEqual(runner.policy_structure(expected),runner.policy_structure(actual))
+    def test_raw_policy_contract_is_exact_and_never_evaluated(self):
+        contract = runner.catalog_contract()
+        baseline = copy.deepcopy(contract.APPROVED_POLICY_CONTRACT)
+        for key,value in (('using_tree', None),('using_tree','changed'),('check_tree',True),
+                          ('policy_oid',True),('relation_oid',0),('role_oids',[True])):
+            observed=copy.deepcopy(baseline);observed[0][key]=value
+            with self.subTest(key=key,value=value),self.assertRaises(ValueError):
+                contract.verify_policy_records(observed,baseline)
+        contract.verify_policy_records(baseline,baseline)
+        with self.assertRaises(ValueError):contract.verify_policy_records(baseline,None)
+        with self.assertRaises(ValueError):contract.verify_policy_records(baseline+[baseline[0]],baseline)
 
     def test_helper_parameter_binding_and_identity(self):
         for name in ('resolve_user','organization_is_active'):
             for field,value in (('proargnames',['p_subject','p_issuer']),('proargmodes',['i']),
                 ('pronargdefaults',1),('no_defaults',False),('text_body',False),('nspname','pgx')):
                 c=Catalog(); b=runner.preflight(c); c.migrated=True
-                data=c.execute('SELECT pg_catalog.oidvectortypes').all()
+                data=c.execute('SELECT p.proargtypes::pg_catalog.oid[] AS args').all()
                 target=next(r for r in data if r['proname']==name); target[field]=value
-                c.overrides['pg_catalog.oidvectortypes']=data
+                c.overrides['p.proargtypes::pg_catalog.oid[] AS args']=data
                 with self.subTest(name=name,field=field), self.assertRaisesRegex(runner.Stop,'HELPER_DEFINITION'):
                     runner.verify_security(c,b)
 
     def test_namespace_filter_semantics_offline(self):
-        # Execute the exact namespace predicate in in-memory SQLite with PostgreSQL
-        # regex semantics supplied locally. No PostgreSQL/network connection exists.
-        with sqlite3.connect(':memory:') as database:
-            database.create_function('regexp',2,lambda pattern,name: re.search(pattern,name) is not None)
-            predicate=runner.USER_NAMESPACE.replace(' !~ ',' NOT REGEXP ')
-            for name in ('pgx','pga','pg1','public','jous_security','pg_temp_abc'):
-                self.assertEqual(database.execute('SELECT n.nspname FROM (SELECT ? AS nspname) n WHERE '+predicate,(name,)).fetchall(),[(name,)])
-            for name in ('pg_catalog','information_schema','pg_toast','pg_temp_12','pg_toast_temp_12'):
-                self.assertEqual(database.execute('SELECT n.nspname FROM (SELECT ? AS nspname) n WHERE '+predicate,(name,)).fetchall(),[])
+        contract=runner.catalog_contract()
+        self.assertEqual(' '.join(runner.USER_NAMESPACE.split()),
+                         ' '.join(contract.USER_NAMESPACE.split()))
+        for name in ('pgx','pga','pg1','public','jous_security','pg_temp_abc','pg_foo','pg_attacker'):
+            self.assertTrue(contract.user_namespace(name))
+        for name in ('pg_catalog','information_schema','pg_toast','pg_temp_12','pg_toast_temp_12'):
+            self.assertFalse(contract.user_namespace(name))
 
     def test_pgx_schema_create_rejected(self):
         c=Catalog(); data=c.execute('SELECT AS db_create').all(); data[0]['schema_create']=True
@@ -547,7 +1172,7 @@ class CatalogTests(unittest.TestCase):
                         data=c.execute('SELECT has_function_privilege').all()
                         data.append(dict(nspname=schema,proname='unexpected',args='',prokind=kind,
                             role=role,allowed=True,grantable=grantable))
-                        c.overrides['has_function_privilege']=data
+                        c.overrides['p.prokind::pg_catalog.text AS prokind,r.role']=data
                         with self.subTest(schema=schema,role=role,kind=kind,grantable=grantable), self.assertRaisesRegex(runner.Stop,'ROUTINE_PRIVILEGES'):
                             runner.verify_routines(c,True)
                         self.assertTrue(runner.USER_NAMESPACE in c.events[-1])
@@ -685,8 +1310,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 class RealExternalTransactionTests(unittest.TestCase):
     def test_installed_alembic_env_joins_real_sqlalchemy_transaction(self):
-        # A fresh isolated child avoids relying on application modules imported by
-        # other suite tests. It uses fake DBAPI only, never a PostgreSQL connection.
+        # An isolated module/import namespace exercises actual installed loaders.
+        # Fake DBAPI only: no external process or PostgreSQL connection.
         code = textwrap.dedent(r"""
             from pathlib import Path
             from types import ModuleType
@@ -760,10 +1385,13 @@ class RealExternalTransactionTests(unittest.TestCase):
             engine.dispose()
             print('OFFLINE_SOURCE_ONLY_0002_PASS')
         """)
-        result = subprocess.run([sys.executable, '-I', '-B', '-'], input=code,
-            cwd=ROOT, capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('OFFLINE_SOURCE_ONLY_0002_PASS', result.stdout)
+        modules = {name:module for name,module in sys.modules.items()
+                   if name != 'jous_api' and not name.startswith('jous_api.')}
+        with (patch.dict(sys.modules,modules,clear=True),patch.object(sys,'meta_path',list(sys.meta_path)),
+              patch.object(sys,'path',list(sys.path)),redirect_stdout(io.StringIO()) as output):
+            exec(compile(code,'<offline-source-integration>','exec'),{})
+        self.assertIn('OFFLINE_SOURCE_ONLY_0002_PASS',output.getvalue())
+
 
 
 class ExecutionSurfaceTests(unittest.TestCase):

@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from jous_api.config import load_settings, load_migration_settings
+from jous_api.step7_catalog import ALL_POLICY_SQL, USER_NAMESPACE
 from jous_api.database import Database, validate_runtime, BASELINE_CHECK, runtime_temp_evidence
 from jous_api.access import AccessService
 from jous_api.identity import AccessDenied, VerifiedPrincipal, RequestIdentity
@@ -74,8 +75,8 @@ async def snapshot(engine):
         queries = {
             'relations': "SELECT n.nspname,c.relname,c.oid,c.relowner,c.relrowsecurity,c.relforcerowsecurity,c.relacl::text "
                 "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-                "WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' ORDER BY 1,2,3",
-            'policies': 'SELECT schemaname,tablename,policyname,permissive,roles::text,cmd,qual,with_check FROM pg_catalog.pg_policies ORDER BY 1,2,3',
+                f"WHERE {USER_NAMESPACE} ORDER BY 1,2,3",
+            'policies': ALL_POLICY_SQL,
             'functions': "SELECT p.oid,p.proname,p.proowner,p.proacl::text,p.prosecdef,p.proconfig::text,p.prosrc "
                 "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='jous_security' ORDER BY 1",
             'roles': "SELECT oid,rolname,rolcanlogin,rolsuper,rolbypassrls,rolcreatedb,rolcreaterole,rolreplication,rolinherit "

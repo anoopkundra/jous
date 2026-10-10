@@ -48,8 +48,10 @@ def upgrade():
       IF EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid=m.member
                  WHERE r.rolname IN ('jous_runtime','jous_security_reader'))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname='jous_security')
-        OR EXISTS (SELECT 1 FROM pg_catalog.pg_policies WHERE schemaname='public'
-                   AND tablename IN ('users','organizations','organization_memberships','projects'))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_policy p
+                   JOIN pg_catalog.pg_class c ON c.oid=p.polrelid
+                   JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                   WHERE n.nspname='public' AND c.relname IN ('users','organizations','organization_memberships','projects'))
         THEN RAISE EXCEPTION 'Unexpected Jous security baseline'; END IF;
       IF (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
           WHERE n.nspname='public' AND c.relname IN ('users','organizations','organization_memberships','projects')

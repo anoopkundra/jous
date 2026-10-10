@@ -1,0 +1,89 @@
+{
+  "execution": false,
+  "files": [
+    {
+      "path": "share/postgres.bki",
+      "sha256": "3a4c07f17eb30d4ce2046efee9998b0abb30f777fd7bde1ee8ddbf93a4cea892",
+      "size": 964939,
+      "source": "installed PostgreSQL 17.11/share/postgres.bki"
+    },
+    {
+      "path": "include/server/catalog/pg_type.h",
+      "sha256": "41f3027163983013a48d382bd3e108e5a9f5a4f9321354a24e6b212b3285e10c",
+      "size": 14516,
+      "source": "installed PostgreSQL 17.11/include/server/catalog/pg_type.h"
+    },
+    {
+      "path": "include/server/catalog/pg_proc.h",
+      "sha256": "53d112fe870eed981e9fda200e016371aa9054318012219afefe927087105ed7",
+      "size": 6761,
+      "source": "installed PostgreSQL 17.11/include/server/catalog/pg_proc.h"
+    },
+    {
+      "path": "include/server/access/sysattr.h",
+      "sha256": "9a01daa4eb4efff75bbdb6afa743531eb0999ef560f3d5f913a2efbe2a8eb75a",
+      "size": 853,
+      "source": "installed PostgreSQL 17.11/include/server/access/sysattr.h"
+    },
+    {
+      "path": "include/server/nodes/parsenodes.h",
+      "sha256": "b124ed80401611abc44c53b362ad5a02d31594db734c1f24881d78aea4912f01",
+      "size": 144587,
+      "source": "installed PostgreSQL 17.11/include/server/nodes/parsenodes.h"
+    },
+    {
+      "path": "include/server/nodes/primnodes.h",
+      "sha256": "557a13b5bacb02f7b87fb0c938f443e7738b8f2c750ec928886ff0cc6b2a0657",
+      "size": 83571,
+      "source": "installed PostgreSQL 17.11/include/server/nodes/primnodes.h"
+    },
+    {
+      "path": "include/server/utils/lsyscache.h",
+      "sha256": "d92246132a38a36a521a0b9b4704af9833cdfdb65cf5559582d97c4bec2a5283",
+      "size": 9540,
+      "source": "installed PostgreSQL 17.11/include/server/utils/lsyscache.h"
+    },
+    {
+      "path": "include/server/utils/fmgrprotos.h",
+      "sha256": "2295dd51178744c452173b5f2eeaae4ad6466ad15879245fb4bd09ee72818cd0",
+      "size": 143215,
+      "source": "installed PostgreSQL 17.11/include/server/utils/fmgrprotos.h"
+    },
+    {
+      "path": "include/server/pg_config.h",
+      "sha256": "54da9035688746bf391daece8abc23a2eb762d9d8063d8185a3f3232658894f8",
+      "size": 9143,
+      "source": "installed PostgreSQL 17.11/include/server/pg_config.h"
+    },
+    {
+      "path": "include/server/pg_config_manual.h",
+      "sha256": "87a433f71593c3dfd37029db9fd9a013cbee61058ee64de8d41ec148945724b3",
+      "size": 14227,
+      "source": "installed PostgreSQL 17.11/include/server/pg_config_manual.h"
+    },
+    {
+      "path": "include/server/catalog/pg_authid_d.h",
+      "sha256": "8f085ec0ec976baace8d5fe8b7111aafe95e0d214bcf48e8fd7f12b58c1110fe",
+      "size": 1940,
+      "source": "installed PostgreSQL 17.11/include/server/catalog/pg_authid_d.h"
+    }
+  ],
+  "frozen_inputs": {
+    "docs/decisions/JOUS.CORE.1A.step7-managed-readonly-candidate.json": "922b335f605d9f96b14791bdb2d4896d2c55f43e7ad0f0116417c54a2826ee79",
+    "docs/decisions/JOUS.CORE.1A.step7-post0002-policy-golden-candidate.json": "9b8ccd7f791134ff51f299d930b2c8678cd21f19160e582791d296fa442009e5",
+    "services/api/infrastructure/runtime_roles.sql": "2fc599de95cfc45256e928b7a4bac1f0f986a8c38a03ecd368b8a1fda4de8187",
+    "services/api/infrastructure/step7_operator514_amendment.json": "10264e9561a030e4a36b3efa4dc4ccc6eacec5632f6b9dcef7825398de4bc545",
+    "services/api/infrastructure/step7_public_compat_manifest.json": "60efef97d11e85a0be679a32f5aa3163f35017f4bebf8d6120bdb183731734e0",
+    "services/api/infrastructure/step7_realtime_authorize_amendment.json": "ad494861a54cb78afa1235fa661a046e2ed182605b7bb6295579968be22497f3",
+    "services/api/migrations/versions/0001_identity_project.py": "3ec37a4cbbb9ed6a3998f1600046366a854d1bb65b61263375d9b4780da37d8e",
+    "services/api/migrations/versions/0002_runtime_rls.py": "4a8551bd1ad7ff8d43f7e6e183253baf71e77860fd65e63d54e0d22b2eaec35a"
+  },
+  "owner_name_authority": {
+    "base_sha256": "60efef97d11e85a0be679a32f5aa3163f35017f4bebf8d6120bdb183731734e0",
+    "bootstrap_oid": 10,
+    "function_oid": 141,
+    "target_role_name": "supabase_admin"
+  },
+  "platform": "PostgreSQL 17.11 Windows AMD64",
+  "schema": "jous.step7.pg17-offline-authority.v1"
+}

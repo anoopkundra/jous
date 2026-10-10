@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+from . import step7_catalog
 from .config import Settings
 from .database_context import DatabaseContext
 
@@ -26,7 +27,7 @@ ROLE_CHECK = """SELECT session_user = 'jous_runtime' AND current_user = 'jous_ru
  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner=r.oid)
  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspowner=r.oid)
  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.proowner=r.oid)
- AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT LIKE 'pg_%'
+ AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') AND n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
      AND n.nspname <> 'information_schema' AND pg_catalog.has_schema_privilege(r.oid,n.oid,'CREATE'))
  FROM pg_catalog.pg_roles r WHERE r.rolname=current_user"""
 TEMP_EVIDENCE = """SELECT
@@ -41,7 +42,7 @@ TEMP_EVIDENCE = """SELECT
          AND pg_catalog.pg_has_role(r.oid,other.oid,'MEMBER')) AS memberships,
  d.datdba=r.oid AS database_owner,
  pg_catalog.has_database_privilege(r.oid,d.oid,'CREATE') AS database_create,
- EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT LIKE 'pg_%'
+ EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') AND n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
          AND n.nspname<>'information_schema' AND pg_catalog.has_schema_privilege(r.oid,n.oid,'CREATE')) AS schema_create,
  r.rolsuper OR r.rolbypassrls OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication
  OR r.rolinherit OR NOT r.rolcanlogin AS unsafe_attributes
@@ -105,21 +106,9 @@ async def validate_runtime(connection, *, state=True):
                 raise DatabaseUnavailable("Unsafe runtime database configuration")
         await runtime_temp_evidence(connection)
         if state:
-            # No extra policy may widen authority. Expressions are reviewed in the migration.
-            rows = (await connection.execute(text("SELECT tablename, policyname, permissive, roles, cmd "
-                "FROM pg_catalog.pg_policies WHERE schemaname='public' AND tablename IN "
-                "('users','organizations','organization_memberships','projects')"))).all()
-            expected = set()
-            commands = {"users": ("SELECT",), "organization_memberships": ("SELECT",),
-                        "organizations": ("SELECT", "UPDATE"), "projects": ("SELECT", "INSERT", "UPDATE")}
-            for table, actions in commands.items():
-                expected.add((table, f"jous_{table}_guard", "RESTRICTIVE", ("jous_runtime",), "ALL"))
-                expected.update((table, f"jous_{table}_{cmd.lower()}", "PERMISSIVE", ("jous_runtime",), cmd)
-                                for cmd in actions)
-                if table in ("users", "organizations"):
-                    expected.add((table, f"jous_{table}_helper_read", "PERMISSIVE", ("jous_security_reader",), "SELECT"))
-            if {(r[0], r[1], r[2], tuple(r[3]), r[4]) for r in rows} != expected:
-                raise DatabaseUnavailable("Unsafe runtime database configuration")
+            policy_rows = (await connection.execute(text(step7_catalog.POLICY_SQL))).mappings().all()
+            step7_catalog.verify_policy_records([dict(row) for row in policy_rows],
+                                               step7_catalog.APPROVED_POLICY_CONTRACT)
             safe_tables = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM "
                 "(VALUES ('users'),('organizations'),('organization_memberships'),('projects')) t(name) "
                 "CROSS JOIN (VALUES ('DELETE'),('TRUNCATE'),('TRIGGER'),('REFERENCES')) p(priv) "
@@ -162,7 +151,7 @@ async def validate_runtime(connection, *, state=True):
             unrelated_safe = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
                 "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
                 "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
-                "WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname NOT LIKE 'pg_%' "
+                "WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') AND n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$' "
                 "AND n.nspname <> 'information_schema' AND NOT (n.nspname='public' AND "
                 "((r.name='jous_runtime' AND c.relname IN ('users','organizations','organization_memberships','projects','alembic_version')) "
                 "OR (r.name='jous_security_reader' AND c.relname IN ('users','organizations')))) "

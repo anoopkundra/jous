@@ -117,7 +117,7 @@ source, backend pyproject.toml and requirements.lock. Unexpected files in audite
 trees fail closed, including every __pycache__ directory and .pyc/.pyo file; only checkout CRLF/LF
 conversion is tolerated. Protected documentation artifacts may remain untracked.
 Migration 0002 is independently pinned to reviewed Git blob
-`0e2cf9e7cefcb40110359eded43e48a3e74f67d7`. Its pin must undergo code review if that
+`cae08d9cf548480fb5d064becca1e89ca2dd898b`. Its pin must undergo code review if that
 migration intentionally changes. The external execution commit avoids embedding a
 runner commit's own SHA in its source. Current uncommitted state cannot execute.
 
@@ -142,16 +142,54 @@ only the postgres-granted row with GRANTED BY postgres RESTRICT. Require complet
 baseline membership restoration, SET false and inherited authority false, then rerun
 security assertions. Only afterward perform the single final commit.
 
-Policy names, commands, roles and modes are exact. USING/WITH CHECK clauses are
-compared locally using an allow-listed structural recognizer for the four pinned 0002
-guards. It retains function identity, arguments, boolean structure, tenant predicates
-and meaningful casts. Only bounded PostgreSQL deparser spelling equivalences are
-accepted: parentheses/whitespace, catalog-qualified builtins, text coercions on known
-text operands, CAST-to-uuid spelling and literal IN/ANY spelling. Unknown syntax fails
-closed. No catalog policy text is submitted for SQL execution or EXPLAIN planning;
-there is no planning fallback. Offline fixtures are not live deparser/isolation proof:
-an unfamiliar benign managed representation must STOP for review, never be accepted by
-loosening the comparison during an operator run.
+Policy verification uses direct pg_policy/pg_class/pg_namespace inventory, including
+policy/relation/owner OIDs, exact namespace/name, numeric role OIDs, command and
+permissiveness, and raw nullable pg_node_tree text. Clauses are opaque exact data:
+no parser, normalization, formatter, planning or expression execution is used.
+The runner and runtime share the same structural verifier. Unexpected policies,
+wrong typed values, duplicates and NULL/non-NULL changes fail closed.
+
+The amendment base remains immutable at SHA256
+`60efef97d11e85a0be679a32f5aa3163f35017f4bebf8d6120bdb183731734e0`.
+The old `step7_public_compat_amendment_candidate.json` is retained historical,
+non-executable evidence and is never a production input. The mandatory
+`step7_operator514_amendment.json` adds only the two independently observed
+strict booleans for operator 514. Its exact hash and evidence/query linkage are
+checked before composition. The base bytes remain unchanged; the standalone
+base cannot satisfy the current execution schema.
+
+The mandatory `step7_policy_template_contract.json` combines the 19 exact raw
+clauses, seven NULL positions, 31 finite OID slots, fixed built-in closure,
+ordered column contracts and created helper/schema expectations. Its exact
+bytes are verified before parsing. It hash-links the installed PG17.11 BKI and
+headers used as inert offline provenance; installed files are not execution
+inputs. Historical golden evidence is provenance, never an execution fallback.
+
+`step7_execution_contract.py` issues distinct immutable contract, independently
+verified binding, expected-policy, actual-policy and continuity objects. Binding
+constructors reject unissued/forged objects. Expected trees are instantiated
+before policy collection, using byte-offset substitutions only. No parser,
+normalization, deparser or live learning is used. All positive attribute rows
+are inventoried: dropped placeholders and extra columns fail. Fixed referents,
+columns, type I/O relationships and helper/schema ACLs are checked independently.
+
+The atomic runner freezes preflight identities, applies unchanged pinned 0002
+in the outer transaction and checks the exact expected policy set. Policy OIDs
+are opaque positive unique identifiers, retained in the first verified snapshot
+and required unchanged on the second pass after temporary membership removal.
+Existing identities/layouts, built-ins and created helper/schema metadata/ACLs
+are revalidated on both passes. Every mismatch rolls back before the sole commit.
+The legacy `APPROVED_POLICY_CONTRACT=None` concrete-record interface is not an
+atomic-runner approval input; runtime activation remains separately unapproved.
+
+Both new artifacts retain migration/runtime approval false. This implementation
+does not supply an approved execution SHA, commit source or authorize mutation.
+All new source/artifacts are covered by the runner's committed-source gate.
+
+Offline verification: run `.venv\Scripts\python.exe -I -B tests/run_step7_offline.py`.
+The harness denies network and all external process creation, .env reads and repository
+writes. It uses a socket-free timer-only event loop; the source-import integration
+case uses an isolated in-memory import namespace and fake DBAPI.
 
 Helper identity includes exact schema/name/type sequence, parameter names/order,
 argument modes/defaults, return type, language, owner, SECURITY DEFINER, volatility,
@@ -161,13 +199,105 @@ is rejected. Helper ACLs and effective EXECUTE/grant-option state are verified.
 Privilege audits exclude only exact pg_catalog/information_schema/pg_toast and numeric
 PostgreSQL pg_temp_/pg_toast_temp_ namespaces. User schemas such as pgx/pga/pg1 are
 included in schema CREATE, relation, sequence and routine audits. All non-system
-pg_proc kinds are audited for both Jous roles; only the two exact helper signatures
-are allowed after migration, with implicit owner grant authority only for their owner.
-No other user-routine EXECUTE or grant option is silently accepted, including PUBLIC
-access. Default ACL audits explicitly include PUBLIC/OID 0 and both Jous roles for all
-catalog object classes; unexpected future-object grants fail closed. Existing managed
-routine/default privileges may therefore require separate reviewed allowance decisions;
-this runner does not alter them or whitelist public-schema routines.
+pg_proc kinds are audited for both Jous roles. Direct EXECUTE is limited to the two
+exact helpers after migration, with implicit owner grant authority only for their
+owner. PUBLIC compatibility is a separate exact reviewed contract below, never a
+schema-name exception. Default ACL audits explicitly include PUBLIC/OID 0 and both
+Jous roles for all catalog object classes; unexpected future-object grants fail closed.
+
+### Reviewed managed PUBLIC compatibility
+
+`step7_public_compat_manifest.json` is data-only reviewed configuration, converted
+offline from the independently reviewed candidate evidence. It contains exactly two
+pg_stat_statements views and 96 routines (48 C and 48 SQL/PLpgSQL). Its exact UTF-8
+bytes are pinned by SHA256 in the runner and included in the externally approved Git
+execution identity. No path override, live learning, hash regeneration or alternate
+manifest version is supported. Byte/hash, duplicate-key, unknown-key, type, Unicode,
+finite-value and closed-schema failures stop before credential access. Routine source
+and raw catalog node text remain data only and are never executed or planned.
+Deparsed view/default text is no longer a live security requirement in V2.
+Production JSON uses sorted keys, compact separators, UTF-8 and no literal newline
+or terminal newline so Git autocrlf cannot change its pinned bytes. Escaped source
+newlines decode to the exact reviewed prosrc bytes; no source normalization occurs.
+
+Every verification inventories the complete PUBLIC relation and routine ACL surface
+across non-system namespaces, including NULL ACL built-in defaults and all pg_proc
+kinds. Unknown/missing objects, overloads, wrappers, sequences, duplicate identities,
+PUBLIC column grants and unexpected default ACLs fail closed. Independent direct ACL
+audits cover databases, schemas, relations/sequences, columns and routines; an allowed
+PUBLIC ACL never masks a direct grant. Only migration 0002's exact Jous grants are
+allowed after migration.
+
+Object ACL authority remains inventoried when ordinary schema lookup is blocked.
+Each entry separately pins effective schema USAGE for both roles: platform entries
+are lookup-blocked; public is reachable. This is not a general proof against indirect
+calls, cached plans or privileged wrappers. Newly reachable schemas stop execution.
+The helper owner retains its stricter NOLOGIN, no-membership-expansion, narrow Jous
+SELECT and exact two-helper ownership checks; shared PUBLIC ACLs do not equate its
+role contract with runtime authorization.
+
+Option B uses target-specific, nonportable catalog evidence. Manifest V2 pins
+PostgreSQL 17.11 / 170011 and the current database OID/name, numeric encoding,
+ICU provider, locale/rules, COLLATE/CTYPE and recorded collation version exactly.
+No locale normalization or automatic upgrade acceptance is permitted.
+
+The two reviewed views use exact raw pg_rewrite _RETURN association, flags,
+ev_qual and ev_action bytes with local SHA256. Eleven reviewed default-bearing
+routines use exact raw proargdefaults and argument/default binding metadata.
+There is no AST parser and no native view/expression deparser or type/signature
+formatter in PUBLIC compatibility collection. Catalog joins map raw type OIDs
+to namespace/name directly; column OIDs, typmods, collations and composite linkage
+are separately compared. The obsolete CONST-only deparser guard is removed.
+
+Unchanged embedded OIDs are protected by finite reviewed referents: 20 types,
+17 functions, five namespaces, PL/pgSQL language/support-function linkage, two
+extensions, one operator, one collation and three relation/column layouts.
+All outgoing pg_depend rows for the bounded selected roots must equal the
+reviewed 47-edge set. Added, missing or duplicate edges fail closed. These are
+built-in catalog scalar/array/text values; referenced routines, type output,
+typmod output, handlers and providers are never invoked by verification.
+Database-default collation context is read directly from exactly one current
+pg_database row, without a provider-aware actual-version function.
+
+Internal PostgreSQL "char" catalog scalars are explicitly projected as
+pg_catalog.text under their original aliases. Installed asyncpg decodes raw
+internal "char" as bytes; these built-in casts provide str without Python byte
+normalization, custom codecs, referenced type output or provider invocation.
+Raw pg_node_tree text handling remains unchanged. Manifest validation enforces
+unsigned OID domains with positive real identities/owners and field-specific zero
+sentinels. Dependency subobjects are nonnegative; selected user-column numbers
+are positive int2 values. Negative typmods, lengths and encoding are preserved.
+
+Database rebuilds, target-local OID changes, PostgreSQL version changes and
+catalog-visible semantic/provenance changes require explicit re-review.
+Evidence candidates are review inputs only, never runtime dependencies.
+The reviewed production manifest bytes have an independent SHA256 pin in the
+runner, checked before parsing and credential access. Hosted PostgreSQL, ICU,
+OS and extension binary integrity remain platform trust assumptions; recorded
+catalog version checks do not prove loaded binary integrity. For selected C/internal
+referents, a prosrc digest identifies the catalog entry-point symbol, not a C body
+or binary-security fingerprint.
+
+The statistics views can contain sensitive operational metadata; compatibility does not
+classify that data as harmless. Routine checks pin stable catalog type identities,
+parameter binding/modes/defaults, return type, owner/security posture, language,
+SECURITY DEFINER, volatility/parallel/strict/leakproof, proconfig, ACL and reachability.
+SQL/PLpgSQL source is SHA256(UTF8(prosrc)) with no normalization. C routines instead
+pin library and entry-point symbol plus exact extension identity/version: pgcrypto 1.3,
+uuid-ossp 1.1 and pg_stat_statements 1.11. This does not prove hosted binary integrity.
+
+`public.rls_auto_enable()` is a dedicated REVIEWED_EVENT_CALLBACK_PUBLIC_ACL exception,
+not an ordinary privileged API or generic platform allowance. Its exact body hash,
+event_trigger return type, postgres owner, SECURITY DEFINER and pg_catalog search_path
+are checked, along with exactly one ensure_rls/ddl_command_end/O binding and the exact
+CREATE TABLE, CREATE TABLE AS, SELECT INTO tags. The installed callback logs/suppresses
+errors; independent migration RLS/FORCE checks remain mandatory. Any changed body,
+security property or binding requires review. New platform/extension versions or ACL,
+definition, ownership, reachability and provenance drift fail closed.
+
+This compatibility patch does not revoke platform privileges or authorize managed
+execution. A separately founder-approved committed execution SHA and explicit managed
+mutation authorization are still required. Never use this operator at application startup.
 
 Separate follow-up security debt: production jous_api/database.py still uses the unsafe
 namespace pattern NOT LIKE 'pg_%', whose underscore is a wildcard. This runner fixes
@@ -211,3 +341,116 @@ Runtime ORM metadata explicitly targets public for all four domain relations;
 authorization queries cannot resolve same-named pg_temp relations. Offline compiled
 SQL checks are not live isolation evidence. A later separately authorized managed
 validator must exercise actual temporary-shadow scenarios before the security gate.
+
+### Read-only collection evidence retention
+
+`step7_readonly_evidence.py` is a data-only boundary, not a connection launcher.
+The previous managed collection scripts were ephemeral; future separately
+authorized collectors must wrap their single reviewed connection in
+`EvidenceConnection` AFTER verifying client-facing pinned TLS, intended target,
+and transaction read-only state. Pass the reviewed `text` statement factory and
+only independently approved routine source bodies for optional source disclosure.
+Do not call the migration pipeline/preflight or acquire its advisory lock.
+
+Run the complete reviewed SELECT-only pre-migration collection through
+`connection.collect(callback, Stop)`. Every successful SELECT's primitive rows
+are retained before caller assertions. The production PUBLIC routine collector
+records exact expected/observed identities and deterministic added/missing sets
+before enforcing its existing set/duplicate checks. Unknown routine bodies and
+configuration are hash-only, not arbitrary sensitive text disclosure.
+
+On `EvidenceFailure`, retain `error.document` in memory, perform rollback and
+connection cleanup, then persist it only as an `INCOMPLETE_FAIL_CLOSED` candidate.
+Its completion, execution approval, and migration-readiness flags are false.
+Unexpected exception messages are never serialized. A complete candidate may
+supersede an incomplete candidate only after ALL reviewed pre-migration gates
+and cleanup pass. Neither outcome approves amendment execution or supplies
+unobserved post-0002 policy trees. This boundary does not authorize a connection.
+
+### Post-cleanup evidence finalization
+
+Future authorized collectors must use `step7_readonly_finalize.run_lifecycle`
+instead of duplicating artifact finalization in an ephemeral script. Construct
+`FinalizationState` with the verified evidence connection and non-secret metadata;
+record each named required gate only after its reviewed assertion passes. The
+state initializes every primary/amendment input and retains the authoritative
+snapshot independently of the collection callback's return value.
+
+The lifecycle attempts rollback, close, and engine dispose in order, even when
+one fails. Only after all cleanup succeeds does it serialize and publish primary
+evidence. Failed cleanup retains an incomplete in-memory snapshot and explicitly
+withholds publication. Primary serialization/write failures report fixed failure
+codes, retain observations, and never claim successful publication. Recovery from
+an unavailable destination requires operator action; no secondary artifact can
+substitute for the lost current snapshot.
+
+Only after confirmed primary publication may secondary amendment processing run.
+Missing/invalid amendment input, serialization failure, or write failure leaves
+the primary bytes intact and reports a separate failure. Incomplete collection
+never processes an amendment. All approval/readiness flags remain false, including
+for complete pre-migration collection; unobserved post-0002 trees remain unresolved.
+Writers must use `atomic_publish` with an expected destination preimage hash (or
+`None` for a new destination), at caller-owned local paths. It uses a verified,
+flushed sibling temporary file and atomic replacement; it is not a hostile-writer
+filesystem compare-and-swap. Retain the state until publication has been confirmed.
+No connection, credential acquisition, or execution authorization is supplied by
+this lifecycle.
+
+### Reviewed realtime.authorize inventory amendment
+
+`step7_realtime_authorize_amendment.json` is a compact, SHA-pinned supplement to
+the unchanged 96-routine Manifest V2. It recognizes only the independently
+reviewed target-specific `realtime.authorize(text,text,text,text,text,text[],text[])`
+inventory drift. `step7_realtime_authorize_amendment.py` composes a 97-routine
+candidate in memory and verifies it using the existing production exact-set and
+metadata comparator, together with mandatory exact supplemental evidence checks.
+Numeric OIDs, exact body, argument/return metadata, raw/effective ACL provenance,
+dependency edges/bindings, and both Jous roles' reachability remain pinned.
+Catalog sets are compared as complete multisets; argument arrays remain ordered.
+Unexpected/missing routines and relaxed schema/owner reachability fail closed.
+
+Production now requires `verify_public_compatibility` as the authoritative gate:
+the exact composed 97 inventory and `collect_snapshot`'s full supplemental catalog
+contract are mandatory together. `verify_grants` and `verify_routines` both enter
+this gate; `public_inventory` also always collects and verifies the supplement.
+The old metadata comparator is private and is not an approval API. No flag or
+96-routine fallback exists. Startup verifies both frozen inputs before credential
+access; the supplement's implementation is included in committed-source coverage.
+The historical 96-row base parser remains a data loader, never sufficient approval.
+The unresolved M1/post-0002 raw-policy gates remain unchanged. Execution, migration
+and runtime activation approval are false.
+Neither the base manifest nor the separate unresolved M1 amendment is rewritten.
+This routine performs transactional authorization probes, including INSERT against
+realtime.messages and transaction-local role/context/GUC changes. Inventory
+compatibility does not approve invocation or describe it as side-effect-free.
+Independent review must assess the production integration before execution is
+considered. This patch does not authorize a connection or migration.
+
+### F1/F2/F3 offline catalog remediation
+
+The final policy contract pins catalog character values as characters (`prokind=f`),
+booleans as strict booleans, and lengths as integers. The frozen Windows AMD64
+`internal` representation is length 8 / alignment `d`. Retained `pg_config.h`
+(`SIZEOF_VOID_P=8`, `ALIGNOF_DOUBLE=8`) and `pg_type.h` (`TYPALIGN_DOUBLE=d`)
+establish the reviewed platform resolution; `pg_config_manual.h` establishes
+64-bit float-by-value. Unresolved macros are rejected by the review-only generator.
+
+Every finite built-in type, function (including support/selectivity functions),
+operator and collation now verifies bootstrap owner OID 10 and target stable role
+`supabase_admin`. The OID comes from BKI and `pg_authid_d.h`; the target role name
+comes from the immutable base's already pinned function-141 owner binding. This
+is independent of public-table owner `postgres`. SQL collects both owner fields.
+
+The review-only generator is `tests/step7_bki_regenerate.py`. Pinned inert BKI and
+headers are retained under `tests/fixtures/step7_pg17_11_catalog/`, with source
+hashes in `AUTHORITY.json`. Ordinary production execution never reads installed
+PostgreSQL source. Test observations are retained in a separate catalog JSON
+fixture and authenticated by an independent BKI reader; they are not copied
+from the final contract or generated by its generator. Authority tests and
+verifier mutation tests are separate. Reversing only this remediation's expected
+value/owner/provenance changes reproduces the old policy artifact SHA exactly.
+
+Current policy-contract SHA256:
+`1d212a755e951be68094981e97486c8cbf10d8c28bf8d845e9b252f183391648`.
+M1, approved raw templates/slots, frozen parent evidence and execution ordering
+remain unchanged. Migration execution and runtime activation remain unapproved.

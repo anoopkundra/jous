@@ -1,0 +1,884 @@
+{
+  "approval": false,
+  "cleanup": {
+    "close": "PASS",
+    "dispose": "PASS",
+    "rollback": "PASS"
+  },
+  "collection_complete": true,
+  "compatibility_approved": false,
+  "execution_approved": false,
+  "failure_gate": null,
+  "failure_reason": null,
+  "lifecycle_metadata": {
+    "advisory_lock_acquired": false,
+    "approval": false,
+    "client_tls": {
+      "ca_der_sha256": "807025ad50d4ed219d2c9c7d299c004f824eb00cf7f65afef607d07b72e6cafa",
+      "cipher": [
+        "TLS_AES_256_GCM_SHA384",
+        "TLSv1.3",
+        256
+      ],
+      "hostname_verification": true,
+      "pinned_only": true,
+      "server_hostname": "aws-0-ca-central-1.pooler.supabase.com",
+      "tls_version": "TLSv1.3",
+      "verified": true,
+      "verify_mode": "CERT_REQUIRED"
+    },
+    "collection_utc": "2026-10-10T00:58:13.749691+00:00",
+    "connection_count": 1,
+    "identity": {
+      "current_user": "postgres",
+      "database": "postgres",
+      "server_version_num": 170011,
+      "session_user": "postgres",
+      "transaction_isolation": "repeatable read",
+      "transaction_read_only": "on"
+    },
+    "managed_mutation": false,
+    "migration_executed": false,
+    "parent_evidence_sha256": "922b335f605d9f96b14791bdb2d4896d2c55f43e7ad0f0116417c54a2826ee79",
+    "results": {
+      "core": [
+        {
+          "lanname": "plpgsql",
+          "namespace": "realtime",
+          "oid": 17784,
+          "owner": "supabase_realtime_admin",
+          "proallargtypes": [
+            25,
+            25,
+            25,
+            25,
+            25,
+            1009,
+            1009,
+            1000,
+            1000
+          ],
+          "proargmodes": [
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "o",
+            "o"
+          ],
+          "proargnames": [
+            "role_name",
+            "topic_name",
+            "claims",
+            "sub",
+            "headers",
+            "read_extensions",
+            "write_extensions",
+            "read_allowed",
+            "write_allowed"
+          ],
+          "proargtypes": [
+            25,
+            25,
+            25,
+            25,
+            25,
+            1009,
+            1009
+          ],
+          "probin": null,
+          "proconfig": null,
+          "proisstrict": false,
+          "prokind": "f",
+          "prolang": 13619,
+          "proleakproof": false,
+          "proname": "authorize",
+          "pronamespace": 16559,
+          "pronargdefaults": 0,
+          "proowner": 17270,
+          "proparallel": "u",
+          "proretset": false,
+          "prorettype": 2249,
+          "prosecdef": false,
+          "prosqlbody": null,
+          "prosrc": "\ndeclare\n  probe_ids uuid[];\n  ext text;\n  allowed boolean;\nbegin\n  -- The probe inserts are rolled back, but they still give the transaction an xid, so it ends\n  -- in a commit. Nothing durable was written, so skip waiting on the WAL flush and sync standbys.\n  -- Set outside the block below, whose rollback would undo it.\n  perform set_config('synchronous_commit', 'off', true);\n\n  -- The RAISE at the end of this block rolls back everything in it.\n  begin\n    probe_ids := array(select gen_random_uuid() from unnest(read_extensions));\n\n    insert into realtime.messages (id, topic, extension, inserted_at, updated_at)\n    select p.id, topic_name, p.extension, now() at time zone 'utc', now() at time zone 'utc'\n    from unnest(probe_ids, read_extensions) as p(id, extension);\n\n    perform set_config('role', role_name, true),\n            set_config('realtime.topic', topic_name, true),\n            set_config('request.jwt.claims', claims, true),\n            set_config('request.jwt.claim.sub', sub, true),\n            set_config('request.jwt.claim.role', role_name, true),\n            set_config('request.headers', headers, true);\n\n    read_allowed := array(\n      select exists(select 1 from realtime.messages m where m.id = p.id)\n      from unnest(probe_ids) with ordinality as p(id, n)\n      order by p.n);\n\n    write_allowed := '{}';\n\n    foreach ext in array write_extensions loop\n      begin\n        insert into realtime.messages (topic, extension, inserted_at, updated_at)\n        values (topic_name, ext, now() at time zone 'utc', now() at time zone 'utc');\n\n        allowed := true;\n      exception when insufficient_privilege then\n        allowed := false;\n      end;\n\n      write_allowed := write_allowed || allowed;\n    end loop;\n\n    raise sqlstate 'RTA01';\n  exception when sqlstate 'RTA01' then\n    null;\n  end;\nend;\n",
+          "provariadic": 0,
+          "provolatile": "v",
+          "return_namespace": "pg_catalog",
+          "return_type": "record",
+          "rolbypassrls": false,
+          "rolcanlogin": false,
+          "rolconnlimit": -1,
+          "rolcreatedb": false,
+          "rolcreaterole": false,
+          "rolinherit": false,
+          "rolreplication": false,
+          "rolsuper": false
+        }
+      ],
+      "dependencies": [
+        {
+          "classid": 1255,
+          "deptype": "n",
+          "destination_class": "pg_language",
+          "destination_class_namespace": "pg_catalog",
+          "objid": 17784,
+          "objsubid": 0,
+          "refclassid": 2612,
+          "refobjid": 13619,
+          "refobjsubid": 0
+        },
+        {
+          "classid": 1255,
+          "deptype": "n",
+          "destination_class": "pg_namespace",
+          "destination_class_namespace": "pg_catalog",
+          "objid": 17784,
+          "objsubid": 0,
+          "refclassid": 2615,
+          "refobjid": 16559,
+          "refobjsubid": 0
+        }
+      ],
+      "dependency_bindings": [
+        {
+          "refclassid": 2612,
+          "refobjid": 13619,
+          "refobjsubid": 0,
+          "rows": [
+            {
+              "laninline": 13617,
+              "lanispl": true,
+              "lanname": "plpgsql",
+              "lanowner": 10,
+              "lanplcallfoid": 13616,
+              "lanpltrusted": true,
+              "lanvalidator": 13618,
+              "oid": 13619
+            }
+          ],
+          "status": "RESOLVED"
+        },
+        {
+          "refclassid": 2615,
+          "refobjid": 16559,
+          "refobjsubid": 0,
+          "rows": [
+            {
+              "nspname": "realtime",
+              "nspowner": 10,
+              "oid": 16559
+            }
+          ],
+          "status": "RESOLVED"
+        }
+      ],
+      "identity_candidates": [
+        {
+          "input_names": [
+            "text",
+            "text",
+            "text",
+            "text",
+            "text",
+            "_text",
+            "_text"
+          ],
+          "input_namespaces": [
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog"
+          ],
+          "input_oids": [
+            25,
+            25,
+            25,
+            25,
+            25,
+            1009,
+            1009
+          ],
+          "nspname": "realtime",
+          "oid": 17784,
+          "prokind": "f",
+          "pronamespace": 16559
+        }
+      ],
+      "membership_paths": [],
+      "previous_prosrc_hash_match": true,
+      "prosrc_sha256_utf8_exact": "501bab2fb4e2d0a183a9cbb3c5702d0d2a8120e2bdaa1c4ba4a7eb531b6138fa",
+      "public_execute_provenance": "EXPLICIT_PROACL",
+      "reachability": [
+        {
+          "oid": 17756,
+          "owner_inherited": false,
+          "owner_member": false,
+          "owner_set": false,
+          "rolbypassrls": false,
+          "rolcanlogin": true,
+          "rolcreatedb": false,
+          "rolcreaterole": false,
+          "rolinherit": false,
+          "rolname": "jous_runtime",
+          "rolreplication": false,
+          "rolsuper": false,
+          "routine_execute": true,
+          "schema_usage": false
+        },
+        {
+          "oid": 17758,
+          "owner_inherited": false,
+          "owner_member": false,
+          "owner_set": false,
+          "rolbypassrls": false,
+          "rolcanlogin": false,
+          "rolcreatedb": false,
+          "rolcreaterole": false,
+          "rolinherit": false,
+          "rolname": "jous_security_reader",
+          "rolreplication": false,
+          "rolsuper": false,
+          "routine_execute": true,
+          "schema_usage": false
+        }
+      ],
+      "resolved_identity": {
+        "input_names": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text",
+          "_text",
+          "_text"
+        ],
+        "input_namespaces": [
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog"
+        ],
+        "input_oids": [
+          25,
+          25,
+          25,
+          25,
+          25,
+          1009,
+          1009
+        ],
+        "nspname": "realtime",
+        "oid": 17784,
+        "prokind": "f",
+        "pronamespace": 16559
+      },
+      "routine_acl_effective": [
+        {
+          "grantee": 0,
+          "grantee_name": "PUBLIC",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        },
+        {
+          "grantee": 16388,
+          "grantee_name": "postgres",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        },
+        {
+          "grantee": 16555,
+          "grantee_name": "dashboard_user",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        },
+        {
+          "grantee": 17270,
+          "grantee_name": "supabase_realtime_admin",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        }
+      ],
+      "routine_acl_raw": [
+        {
+          "default_acl": "{=X/supabase_realtime_admin,supabase_realtime_admin=X/supabase_realtime_admin}",
+          "proacl_is_null": false,
+          "raw_proacl": "{=X/supabase_realtime_admin,supabase_realtime_admin=X/supabase_realtime_admin,postgres=X/supabase_realtime_admin,dashboard_user=X/supabase_realtime_admin}"
+        }
+      ],
+      "schema_acl_effective": [
+        {
+          "grantee": 10,
+          "grantee_name": "supabase_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "CREATE"
+        },
+        {
+          "grantee": 10,
+          "grantee_name": "supabase_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16388,
+          "grantee_name": "postgres",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": true,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16484,
+          "grantee_name": "anon",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16485,
+          "grantee_name": "authenticated",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16486,
+          "grantee_name": "service_role",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 17270,
+          "grantee_name": "supabase_realtime_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "CREATE"
+        },
+        {
+          "grantee": 17270,
+          "grantee_name": "supabase_realtime_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        }
+      ],
+      "schema_acl_raw": [
+        {
+          "acl_is_null": false,
+          "default_acl": "{supabase_admin=UC/supabase_admin}",
+          "nspname": "realtime",
+          "nspowner": 10,
+          "oid": 16559,
+          "owner": "supabase_admin",
+          "raw_acl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,service_role=U/supabase_admin,supabase_realtime_admin=UC/supabase_admin,authenticated=U/supabase_admin}"
+        }
+      ],
+      "type_bindings": [
+        {
+          "nspname": "pg_catalog",
+          "oid": 25,
+          "typelem": 0,
+          "typname": "text",
+          "typnamespace": 11,
+          "typtype": "b"
+        },
+        {
+          "nspname": "pg_catalog",
+          "oid": 1000,
+          "typelem": 16,
+          "typname": "_bool",
+          "typnamespace": 11,
+          "typtype": "b"
+        },
+        {
+          "nspname": "pg_catalog",
+          "oid": 1009,
+          "typelem": 25,
+          "typname": "_text",
+          "typnamespace": 11,
+          "typtype": "b"
+        },
+        {
+          "nspname": "pg_catalog",
+          "oid": 2249,
+          "typelem": 0,
+          "typname": "record",
+          "typnamespace": 11,
+          "typtype": "p"
+        }
+      ]
+    },
+    "schema": "jous.step7.targeted-realtime-authorize",
+    "scope": "realtime.authorize only"
+  },
+  "migration_ready": false,
+  "observations": [
+    {
+      "parameters": {},
+      "rows": [
+        {
+          "input_names": [
+            "text",
+            "text",
+            "text",
+            "text",
+            "text",
+            "_text",
+            "_text"
+          ],
+          "input_namespaces": [
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog",
+            "pg_catalog"
+          ],
+          "input_oids": [
+            25,
+            25,
+            25,
+            25,
+            25,
+            1009,
+            1009
+          ],
+          "nspname": "realtime",
+          "oid": 17784,
+          "prokind": "f",
+          "pronamespace": 16559
+        }
+      ],
+      "sql": "SELECT p.oid,p.pronamespace,n.nspname,p.prokind::pg_catalog.text AS prokind,p.proargtypes::pg_catalog.oid[] AS input_oids,\n    ARRAY(SELECT tn.nspname::pg_catalog.text FROM pg_catalog.unnest(p.proargtypes::pg_catalog.oid[]) WITH ORDINALITY a(oid,pos) JOIN pg_catalog.pg_type t ON t.oid=a.oid JOIN pg_catalog.pg_namespace tn ON tn.oid=t.typnamespace ORDER BY a.pos) AS input_namespaces,\n    ARRAY(SELECT t.typname::pg_catalog.text FROM pg_catalog.unnest(p.proargtypes::pg_catalog.oid[]) WITH ORDINALITY a(oid,pos) JOIN pg_catalog.pg_type t ON t.oid=a.oid ORDER BY a.pos) AS input_names\n    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='realtime' AND p.proname='authorize' AND p.prokind='f' ORDER BY p.oid",
+      "sql_sha256": "57b696f4449af48e1ac4c4c1baabecc1e2f43b86d2aa4511dfeef388b6bb2f46"
+    },
+    {
+      "parameters": {
+        "oid": 17784
+      },
+      "rows": [
+        {
+          "lanname": "plpgsql",
+          "namespace": "realtime",
+          "oid": 17784,
+          "owner": "supabase_realtime_admin",
+          "proallargtypes": [
+            25,
+            25,
+            25,
+            25,
+            25,
+            1009,
+            1009,
+            1000,
+            1000
+          ],
+          "proargmodes": [
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "o",
+            "o"
+          ],
+          "proargnames": [
+            "role_name",
+            "topic_name",
+            "claims",
+            "sub",
+            "headers",
+            "read_extensions",
+            "write_extensions",
+            "read_allowed",
+            "write_allowed"
+          ],
+          "proargtypes": [
+            25,
+            25,
+            25,
+            25,
+            25,
+            1009,
+            1009
+          ],
+          "probin": null,
+          "proconfig": null,
+          "proisstrict": false,
+          "prokind": "f",
+          "prolang": 13619,
+          "proleakproof": false,
+          "proname": "authorize",
+          "pronamespace": 16559,
+          "pronargdefaults": 0,
+          "proowner": 17270,
+          "proparallel": "u",
+          "proretset": false,
+          "prorettype": 2249,
+          "prosecdef": false,
+          "prosqlbody": null,
+          "prosrc": "\ndeclare\n  probe_ids uuid[];\n  ext text;\n  allowed boolean;\nbegin\n  -- The probe inserts are rolled back, but they still give the transaction an xid, so it ends\n  -- in a commit. Nothing durable was written, so skip waiting on the WAL flush and sync standbys.\n  -- Set outside the block below, whose rollback would undo it.\n  perform set_config('synchronous_commit', 'off', true);\n\n  -- The RAISE at the end of this block rolls back everything in it.\n  begin\n    probe_ids := array(select gen_random_uuid() from unnest(read_extensions));\n\n    insert into realtime.messages (id, topic, extension, inserted_at, updated_at)\n    select p.id, topic_name, p.extension, now() at time zone 'utc', now() at time zone 'utc'\n    from unnest(probe_ids, read_extensions) as p(id, extension);\n\n    perform set_config('role', role_name, true),\n            set_config('realtime.topic', topic_name, true),\n            set_config('request.jwt.claims', claims, true),\n            set_config('request.jwt.claim.sub', sub, true),\n            set_config('request.jwt.claim.role', role_name, true),\n            set_config('request.headers', headers, true);\n\n    read_allowed := array(\n      select exists(select 1 from realtime.messages m where m.id = p.id)\n      from unnest(probe_ids) with ordinality as p(id, n)\n      order by p.n);\n\n    write_allowed := '{}';\n\n    foreach ext in array write_extensions loop\n      begin\n        insert into realtime.messages (topic, extension, inserted_at, updated_at)\n        values (topic_name, ext, now() at time zone 'utc', now() at time zone 'utc');\n\n        allowed := true;\n      exception when insufficient_privilege then\n        allowed := false;\n      end;\n\n      write_allowed := write_allowed || allowed;\n    end loop;\n\n    raise sqlstate 'RTA01';\n  exception when sqlstate 'RTA01' then\n    null;\n  end;\nend;\n",
+          "provariadic": 0,
+          "provolatile": "v",
+          "return_namespace": "pg_catalog",
+          "return_type": "record",
+          "rolbypassrls": false,
+          "rolcanlogin": false,
+          "rolconnlimit": -1,
+          "rolcreatedb": false,
+          "rolcreaterole": false,
+          "rolinherit": false,
+          "rolreplication": false,
+          "rolsuper": false
+        }
+      ],
+      "sql": "SELECT p.oid,p.pronamespace,n.nspname AS namespace,p.proname,p.proowner,o.rolname AS owner,o.rolcanlogin,o.rolsuper,o.rolbypassrls,o.rolcreatedb,o.rolcreaterole,o.rolreplication,o.rolinherit,o.rolconnlimit,p.prolang,l.lanname,p.prokind::pg_catalog.text AS prokind,p.prosecdef,p.provolatile::pg_catalog.text AS provolatile,p.proparallel::pg_catalog.text AS proparallel,p.proisstrict,p.proleakproof,p.proretset,p.prorettype,rt.typname AS return_type,rn.nspname AS return_namespace,p.proargtypes::pg_catalog.oid[] AS proargtypes,p.proallargtypes,p.proargmodes::pg_catalog.text[] AS proargmodes,p.proargnames,p.pronargdefaults,p.provariadic,p.proconfig,p.probin,p.prosrc,p.prosqlbody::pg_catalog.text AS prosqlbody\n    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace JOIN pg_catalog.pg_roles o ON o.oid=p.proowner JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_type rt ON rt.oid=p.prorettype JOIN pg_catalog.pg_namespace rn ON rn.oid=rt.typnamespace WHERE p.oid=:oid",
+      "sql_sha256": "1b5fc133dfa8919b6f879222263b74e6015bcd789b69dfd800d3608c17d9047d"
+    },
+    {
+      "parameters": {
+        "ids": [
+          25,
+          1000,
+          1009,
+          2249
+        ]
+      },
+      "rows": [
+        {
+          "nspname": "pg_catalog",
+          "oid": 25,
+          "typelem": 0,
+          "typname": "text",
+          "typnamespace": 11,
+          "typtype": "b"
+        },
+        {
+          "nspname": "pg_catalog",
+          "oid": 1000,
+          "typelem": 16,
+          "typname": "_bool",
+          "typnamespace": 11,
+          "typtype": "b"
+        },
+        {
+          "nspname": "pg_catalog",
+          "oid": 1009,
+          "typelem": 25,
+          "typname": "_text",
+          "typnamespace": 11,
+          "typtype": "b"
+        },
+        {
+          "nspname": "pg_catalog",
+          "oid": 2249,
+          "typelem": 0,
+          "typname": "record",
+          "typnamespace": 11,
+          "typtype": "p"
+        }
+      ],
+      "sql": "SELECT t.oid,t.typnamespace,n.nspname,t.typname,t.typtype::pg_catalog.text AS typtype,t.typelem FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace WHERE t.oid=ANY(CAST(:ids AS pg_catalog.oid[])) ORDER BY t.oid",
+      "sql_sha256": "b2ec1c83c5f694d0ab9f2228ef38f788447341c2160fe6a985ae67d2bf51d3da"
+    },
+    {
+      "parameters": {
+        "oid": 17784
+      },
+      "rows": [
+        {
+          "default_acl": "{=X/supabase_realtime_admin,supabase_realtime_admin=X/supabase_realtime_admin}",
+          "proacl_is_null": false,
+          "raw_proacl": "{=X/supabase_realtime_admin,supabase_realtime_admin=X/supabase_realtime_admin,postgres=X/supabase_realtime_admin,dashboard_user=X/supabase_realtime_admin}"
+        }
+      ],
+      "sql": "SELECT p.proacl IS NULL AS proacl_is_null,p.proacl::pg_catalog.text AS raw_proacl,pg_catalog.acldefault('f',p.proowner)::pg_catalog.text AS default_acl FROM pg_catalog.pg_proc p WHERE p.oid=:oid",
+      "sql_sha256": "f26b820cf30efcc7eec3a63cbc3e8be3069846ba5e187ec01779337bcf26f983"
+    },
+    {
+      "parameters": {
+        "oid": 17784
+      },
+      "rows": [
+        {
+          "grantee": 0,
+          "grantee_name": "PUBLIC",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        },
+        {
+          "grantee": 16388,
+          "grantee_name": "postgres",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        },
+        {
+          "grantee": 16555,
+          "grantee_name": "dashboard_user",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        },
+        {
+          "grantee": 17270,
+          "grantee_name": "supabase_realtime_admin",
+          "grantor": 17270,
+          "grantor_name": "supabase_realtime_admin",
+          "is_grantable": false,
+          "privilege_type": "EXECUTE"
+        }
+      ],
+      "sql": "SELECT a.grantor,g.rolname AS grantor_name,a.grantee,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE u.rolname::pg_catalog.text END AS grantee_name,a.privilege_type,a.is_grantable FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a LEFT JOIN pg_catalog.pg_roles g ON g.oid=a.grantor LEFT JOIN pg_catalog.pg_roles u ON u.oid=a.grantee WHERE p.oid=:oid ORDER BY a.grantee,a.grantor,a.privilege_type,a.is_grantable",
+      "sql_sha256": "65ce3cfdf540951fe552074608375d8c5608b47d8a18e48cd18da8a46d05e89e"
+    },
+    {
+      "parameters": {
+        "oid": 16559
+      },
+      "rows": [
+        {
+          "acl_is_null": false,
+          "default_acl": "{supabase_admin=UC/supabase_admin}",
+          "nspname": "realtime",
+          "nspowner": 10,
+          "oid": 16559,
+          "owner": "supabase_admin",
+          "raw_acl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,service_role=U/supabase_admin,supabase_realtime_admin=UC/supabase_admin,authenticated=U/supabase_admin}"
+        }
+      ],
+      "sql": "SELECT n.oid,n.nspname,n.nspowner,o.rolname AS owner,n.nspacl IS NULL AS acl_is_null,n.nspacl::pg_catalog.text AS raw_acl,pg_catalog.acldefault('n',n.nspowner)::pg_catalog.text AS default_acl FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles o ON o.oid=n.nspowner WHERE n.oid=:oid",
+      "sql_sha256": "5169fa22b5ffe6591ed1696a557c433194c66962fc45d246b06427f8086c0f04"
+    },
+    {
+      "parameters": {
+        "oid": 16559
+      },
+      "rows": [
+        {
+          "grantee": 10,
+          "grantee_name": "supabase_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "CREATE"
+        },
+        {
+          "grantee": 10,
+          "grantee_name": "supabase_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16388,
+          "grantee_name": "postgres",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": true,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16484,
+          "grantee_name": "anon",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16485,
+          "grantee_name": "authenticated",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 16486,
+          "grantee_name": "service_role",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        },
+        {
+          "grantee": 17270,
+          "grantee_name": "supabase_realtime_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "CREATE"
+        },
+        {
+          "grantee": 17270,
+          "grantee_name": "supabase_realtime_admin",
+          "grantor": 10,
+          "grantor_name": "supabase_admin",
+          "is_grantable": false,
+          "privilege_type": "USAGE"
+        }
+      ],
+      "sql": "SELECT a.grantor,g.rolname AS grantor_name,a.grantee,CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE u.rolname::pg_catalog.text END AS grantee_name,a.privilege_type,a.is_grantable FROM pg_catalog.pg_namespace n CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) a LEFT JOIN pg_catalog.pg_roles g ON g.oid=a.grantor LEFT JOIN pg_catalog.pg_roles u ON u.oid=a.grantee WHERE n.oid=:oid ORDER BY a.grantee,a.grantor,a.privilege_type,a.is_grantable",
+      "sql_sha256": "2670c5eef72b5686c35b728bba4711bce3038534210db4922562315e5808d34a"
+    },
+    {
+      "parameters": {
+        "oid": 17784,
+        "role": 17270
+      },
+      "rows": [
+        {
+          "oid": 17756,
+          "owner_inherited": false,
+          "owner_member": false,
+          "owner_set": false,
+          "rolbypassrls": false,
+          "rolcanlogin": true,
+          "rolcreatedb": false,
+          "rolcreaterole": false,
+          "rolinherit": false,
+          "rolname": "jous_runtime",
+          "rolreplication": false,
+          "rolsuper": false,
+          "routine_execute": true,
+          "schema_usage": false
+        },
+        {
+          "oid": 17758,
+          "owner_inherited": false,
+          "owner_member": false,
+          "owner_set": false,
+          "rolbypassrls": false,
+          "rolcanlogin": false,
+          "rolcreatedb": false,
+          "rolcreaterole": false,
+          "rolinherit": false,
+          "rolname": "jous_security_reader",
+          "rolreplication": false,
+          "rolsuper": false,
+          "routine_execute": true,
+          "schema_usage": false
+        }
+      ],
+      "sql": "SELECT r.oid,r.rolname,r.rolcanlogin,r.rolsuper,r.rolbypassrls,r.rolcreatedb,r.rolcreaterole,r.rolreplication,r.rolinherit,pg_catalog.has_schema_privilege(r.oid,'realtime','USAGE') AS schema_usage,pg_catalog.has_function_privilege(r.oid,CAST(:oid AS pg_catalog.oid),'EXECUTE') AS routine_execute,pg_catalog.pg_has_role(r.oid,CAST(:role AS pg_catalog.oid),'MEMBER') AS owner_member,pg_catalog.pg_has_role(r.oid,CAST(:role AS pg_catalog.oid),'SET') AS owner_set,pg_catalog.pg_has_role(r.oid,CAST(:role AS pg_catalog.oid),'USAGE') AS owner_inherited FROM pg_catalog.pg_roles r WHERE r.rolname IN ('jous_runtime','jous_security_reader') ORDER BY r.rolname",
+      "sql_sha256": "e9ae363a057b1fdc90e0858db9e7ff5157af6825cb392cb9e73695d4251b8ca8"
+    },
+    {
+      "parameters": {
+        "role": 17270
+      },
+      "rows": [],
+      "sql": "SELECT m.roleid,m.member,m.grantor,r.rolname AS role_name,u.rolname AS member_name,g.rolname AS grantor_name,m.admin_option,m.inherit_option,m.set_option FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid=m.roleid JOIN pg_catalog.pg_roles u ON u.oid=m.member JOIN pg_catalog.pg_roles g ON g.oid=m.grantor WHERE m.member IN (WITH RECURSIVE reachable(oid) AS (SELECT oid FROM pg_catalog.pg_roles WHERE rolname IN ('jous_runtime','jous_security_reader') UNION SELECT a.roleid FROM pg_catalog.pg_auth_members a JOIN reachable x ON x.oid=a.member) SELECT oid FROM reachable) OR m.roleid=:role ORDER BY m.member,m.roleid,m.grantor",
+      "sql_sha256": "c106b41c0d1193a47fde41f56eed6e9ffc06d8a41332185a61ea4a5ced73716e"
+    },
+    {
+      "parameters": {
+        "oid": 17784
+      },
+      "rows": [
+        {
+          "classid": 1255,
+          "deptype": "n",
+          "destination_class": "pg_language",
+          "destination_class_namespace": "pg_catalog",
+          "objid": 17784,
+          "objsubid": 0,
+          "refclassid": 2612,
+          "refobjid": 13619,
+          "refobjsubid": 0
+        },
+        {
+          "classid": 1255,
+          "deptype": "n",
+          "destination_class": "pg_namespace",
+          "destination_class_namespace": "pg_catalog",
+          "objid": 17784,
+          "objsubid": 0,
+          "refclassid": 2615,
+          "refobjid": 16559,
+          "refobjsubid": 0
+        }
+      ],
+      "sql": "SELECT d.classid,d.objid,d.objsubid,d.refclassid,d.refobjid,d.refobjsubid,d.deptype::pg_catalog.text AS deptype,cn.nspname AS destination_class_namespace,cc.relname AS destination_class FROM pg_catalog.pg_depend d LEFT JOIN pg_catalog.pg_class cc ON cc.oid=d.refclassid LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=cc.relnamespace WHERE d.classid=(SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pg_catalog' AND c.relname='pg_proc') AND d.objid=:oid ORDER BY d.objsubid,d.refclassid,d.refobjid,d.refobjsubid,d.deptype",
+      "sql_sha256": "aadf7b1aad32f9fc6fa2c1196d62a76263be7cb224d2b441a616db36a854a845"
+    },
+    {
+      "parameters": {
+        "oid": 13619
+      },
+      "rows": [
+        {
+          "laninline": 13617,
+          "lanispl": true,
+          "lanname": "plpgsql",
+          "lanowner": 10,
+          "lanplcallfoid": 13616,
+          "lanpltrusted": true,
+          "lanvalidator": 13618,
+          "oid": 13619
+        }
+      ],
+      "sql": "SELECT oid,lanname,lanowner,lanispl,lanpltrusted,lanplcallfoid,laninline,lanvalidator FROM pg_catalog.pg_language WHERE oid=:oid",
+      "sql_sha256": "163207b4c0d243c2707cbbd76b81210143c9261b693ebe316c55b2b3d225923d"
+    },
+    {
+      "parameters": {
+        "oid": 16559
+      },
+      "rows": [
+        {
+          "nspname": "realtime",
+          "nspowner": 10,
+          "oid": 16559
+        }
+      ],
+      "sql": "SELECT oid,nspname,nspowner FROM pg_catalog.pg_namespace WHERE oid=:oid",
+      "sql_sha256": "b40ed18074a38532ecd12dd99fa72143090d52f5f09974ad08c37eae3c3dc167"
+    }
+  ],
+  "post_0002_raw_policy_contract": null,
+  "public_routine_sets": [],
+  "schema": "jous.step7.targeted-realtime-authorize",
+  "status": "TARGETED_EVIDENCE_COLLECTION_COMPLETE",
+  "verified_boundary": {
+    "client_tls": true,
+    "target": true,
+    "transaction_read_only": true
+  }
+}

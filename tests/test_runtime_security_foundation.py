@@ -12,6 +12,7 @@ from alembic import command
 from alembic.config import Config
 from jous_api.access import AccessService
 from jous_api.config import Settings, ConfigurationError, load_settings, load_migration_settings
+from jous_api import step7_catalog
 from jous_api.database import Database, DatabaseUnavailable, validate_runtime
 from jous_api.database_context import DatabaseContext
 from jous_api.dependencies import get_session, get_request_identity
@@ -385,19 +386,27 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         commands = {"users": ("SELECT",), "organization_memberships": ("SELECT",),
                     "organizations": ("SELECT", "UPDATE"), "projects": ("SELECT", "INSERT", "UPDATE")}
         policies = []
-        for table, actions in commands.items():
-            policies.append((table, f"jous_{table}_guard", "RESTRICTIVE", ['jous_runtime'], 'ALL'))
+        for i,(table,actions) in enumerate(commands.items()):
+            def add(name,command,permissive,role,using,check):
+                policies.append(dict(policy_oid=1000+len(policies),relation_oid=200+i,
+                    namespace='public',relation_name=table,policy_name=name,command=command,
+                    permissive=permissive,role_oids=[role],role_contract=True,using_tree=using,check_tree=check,owner_oid=100))
+            add(f'jous_{table}_guard','*',False,51,'{SYNTHETIC}','{SYNTHETIC}')
             for action in actions:
-                policies.append((table, f"jous_{table}_{action.lower()}", "PERMISSIVE", ['jous_runtime'], action))
-            if table in ('users', 'organizations'):
-                policies.append((table, f"jous_{table}_helper_read", "PERMISSIVE", ['jous_security_reader'], 'SELECT'))
+                add(f'jous_{table}_{action.lower()}',{'SELECT':'r','UPDATE':'w','INSERT':'a'}[action],True,51,
+                    None if action=='INSERT' else '{SYNTHETIC}', '{SYNTHETIC}' if action in ('INSERT','UPDATE') else None)
+            if table in ('users','organizations'):
+                add(f'jous_{table}_helper_read','r',True,50,'{SYNTHETIC TRUE}',None)
+        import copy
+        self.addCleanup(patch.stopall)
+        patch.object(step7_catalog,'APPROVED_POLICY_CONTRACT',copy.deepcopy(policies)).start()
         privileges = [('projects','status','jous_runtime','UPDATE',False),
                       ('projects','organization_id','jous_runtime','UPDATE',False),
                       ('users','auth_subject','jous_runtime','SELECT',False),
                       ('users','auth_subject','jous_security_reader','SELECT',True),
                       ('organization_memberships','role','jous_security_reader','SELECT',False)]
         policy_result, privilege_result = MagicMock(), MagicMock()
-        policy_result.all.return_value = policies
+        policy_result.mappings.return_value.all.return_value = policies
         privilege_result.all.return_value = privileges
         temp_result = MagicMock()
         temp_result.mappings.return_value.all.return_value = [self.temp_evidence()]
@@ -427,7 +436,7 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         for fault in ('policy', 'status', 'helper_memberships'):
             connection, policies, privileges = self.complete_connection()
             if fault == 'policy':
-                policies.append(('projects','allow_all','PERMISSIVE',['public'],'ALL'))
+                policies.append(dict(policies[-1], policy_oid=9999,policy_name='allow_all',role_oids=[0]))
             elif fault == 'status':
                 privileges[0] = (*privileges[0][:-1],True)
             else:

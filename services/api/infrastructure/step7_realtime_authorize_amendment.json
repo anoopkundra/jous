@@ -1,0 +1,408 @@
+{
+  "base_manifest_sha256": "60efef97d11e85a0be679a32f5aa3163f35017f4bebf8d6120bdb183731734e0",
+  "classification": "STRUCTURALLY_COMPATIBLE_PLATFORM_DRIFT",
+  "execution_approved": false,
+  "migration_execution_approved": false,
+  "parent_evidence_sha256": "922b335f605d9f96b14791bdb2d4896d2c55f43e7ad0f0116417c54a2826ee79",
+  "runtime_activation_approved": false,
+  "schema": "jous.step7.realtime-authorize-reviewed-supplement",
+  "scope": "Target-specific managed platform inventory only; no Jous invocation approval.",
+  "security_interpretation": "Performs transactional authorization probes including INSERT against realtime.messages and transaction-local role/context/GUC changes. Not pure, not side-effect-free, not approved for Jous invocation.",
+  "targeted_contract": {
+    "core": [
+      {
+        "lanname": "plpgsql",
+        "namespace": "realtime",
+        "oid": 17784,
+        "owner": "supabase_realtime_admin",
+        "proallargtypes": [
+          25,
+          25,
+          25,
+          25,
+          25,
+          1009,
+          1009,
+          1000,
+          1000
+        ],
+        "proargmodes": [
+          "i",
+          "i",
+          "i",
+          "i",
+          "i",
+          "i",
+          "i",
+          "o",
+          "o"
+        ],
+        "proargnames": [
+          "role_name",
+          "topic_name",
+          "claims",
+          "sub",
+          "headers",
+          "read_extensions",
+          "write_extensions",
+          "read_allowed",
+          "write_allowed"
+        ],
+        "proargtypes": [
+          25,
+          25,
+          25,
+          25,
+          25,
+          1009,
+          1009
+        ],
+        "probin": null,
+        "proconfig": null,
+        "proisstrict": false,
+        "prokind": "f",
+        "prolang": 13619,
+        "proleakproof": false,
+        "proname": "authorize",
+        "pronamespace": 16559,
+        "pronargdefaults": 0,
+        "proowner": 17270,
+        "proparallel": "u",
+        "proretset": false,
+        "prorettype": 2249,
+        "prosecdef": false,
+        "prosqlbody": null,
+        "prosrc": "\ndeclare\n  probe_ids uuid[];\n  ext text;\n  allowed boolean;\nbegin\n  -- The probe inserts are rolled back, but they still give the transaction an xid, so it ends\n  -- in a commit. Nothing durable was written, so skip waiting on the WAL flush and sync standbys.\n  -- Set outside the block below, whose rollback would undo it.\n  perform set_config('synchronous_commit', 'off', true);\n\n  -- The RAISE at the end of this block rolls back everything in it.\n  begin\n    probe_ids := array(select gen_random_uuid() from unnest(read_extensions));\n\n    insert into realtime.messages (id, topic, extension, inserted_at, updated_at)\n    select p.id, topic_name, p.extension, now() at time zone 'utc', now() at time zone 'utc'\n    from unnest(probe_ids, read_extensions) as p(id, extension);\n\n    perform set_config('role', role_name, true),\n            set_config('realtime.topic', topic_name, true),\n            set_config('request.jwt.claims', claims, true),\n            set_config('request.jwt.claim.sub', sub, true),\n            set_config('request.jwt.claim.role', role_name, true),\n            set_config('request.headers', headers, true);\n\n    read_allowed := array(\n      select exists(select 1 from realtime.messages m where m.id = p.id)\n      from unnest(probe_ids) with ordinality as p(id, n)\n      order by p.n);\n\n    write_allowed := '{}';\n\n    foreach ext in array write_extensions loop\n      begin\n        insert into realtime.messages (topic, extension, inserted_at, updated_at)\n        values (topic_name, ext, now() at time zone 'utc', now() at time zone 'utc');\n\n        allowed := true;\n      exception when insufficient_privilege then\n        allowed := false;\n      end;\n\n      write_allowed := write_allowed || allowed;\n    end loop;\n\n    raise sqlstate 'RTA01';\n  exception when sqlstate 'RTA01' then\n    null;\n  end;\nend;\n",
+        "provariadic": 0,
+        "provolatile": "v",
+        "return_namespace": "pg_catalog",
+        "return_type": "record",
+        "rolbypassrls": false,
+        "rolcanlogin": false,
+        "rolconnlimit": -1,
+        "rolcreatedb": false,
+        "rolcreaterole": false,
+        "rolinherit": false,
+        "rolreplication": false,
+        "rolsuper": false
+      }
+    ],
+    "dependencies": [
+      {
+        "classid": 1255,
+        "deptype": "n",
+        "destination_class": "pg_language",
+        "destination_class_namespace": "pg_catalog",
+        "objid": 17784,
+        "objsubid": 0,
+        "refclassid": 2612,
+        "refobjid": 13619,
+        "refobjsubid": 0
+      },
+      {
+        "classid": 1255,
+        "deptype": "n",
+        "destination_class": "pg_namespace",
+        "destination_class_namespace": "pg_catalog",
+        "objid": 17784,
+        "objsubid": 0,
+        "refclassid": 2615,
+        "refobjid": 16559,
+        "refobjsubid": 0
+      }
+    ],
+    "dependency_bindings": [
+      {
+        "refclassid": 2612,
+        "refobjid": 13619,
+        "refobjsubid": 0,
+        "rows": [
+          {
+            "laninline": 13617,
+            "lanispl": true,
+            "lanname": "plpgsql",
+            "lanowner": 10,
+            "lanplcallfoid": 13616,
+            "lanpltrusted": true,
+            "lanvalidator": 13618,
+            "oid": 13619
+          }
+        ],
+        "status": "RESOLVED"
+      },
+      {
+        "refclassid": 2615,
+        "refobjid": 16559,
+        "refobjsubid": 0,
+        "rows": [
+          {
+            "nspname": "realtime",
+            "nspowner": 10,
+            "oid": 16559
+          }
+        ],
+        "status": "RESOLVED"
+      }
+    ],
+    "identity_candidates": [
+      {
+        "input_names": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text",
+          "_text",
+          "_text"
+        ],
+        "input_namespaces": [
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog",
+          "pg_catalog"
+        ],
+        "input_oids": [
+          25,
+          25,
+          25,
+          25,
+          25,
+          1009,
+          1009
+        ],
+        "nspname": "realtime",
+        "oid": 17784,
+        "prokind": "f",
+        "pronamespace": 16559
+      }
+    ],
+    "membership_paths": [],
+    "previous_prosrc_hash_match": true,
+    "prosrc_sha256_utf8_exact": "501bab2fb4e2d0a183a9cbb3c5702d0d2a8120e2bdaa1c4ba4a7eb531b6138fa",
+    "public_execute_provenance": "EXPLICIT_PROACL",
+    "reachability": [
+      {
+        "oid": 17756,
+        "owner_inherited": false,
+        "owner_member": false,
+        "owner_set": false,
+        "rolbypassrls": false,
+        "rolcanlogin": true,
+        "rolcreatedb": false,
+        "rolcreaterole": false,
+        "rolinherit": false,
+        "rolname": "jous_runtime",
+        "rolreplication": false,
+        "rolsuper": false,
+        "routine_execute": true,
+        "schema_usage": false
+      },
+      {
+        "oid": 17758,
+        "owner_inherited": false,
+        "owner_member": false,
+        "owner_set": false,
+        "rolbypassrls": false,
+        "rolcanlogin": false,
+        "rolcreatedb": false,
+        "rolcreaterole": false,
+        "rolinherit": false,
+        "rolname": "jous_security_reader",
+        "rolreplication": false,
+        "rolsuper": false,
+        "routine_execute": true,
+        "schema_usage": false
+      }
+    ],
+    "resolved_identity": {
+      "input_names": [
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "_text",
+        "_text"
+      ],
+      "input_namespaces": [
+        "pg_catalog",
+        "pg_catalog",
+        "pg_catalog",
+        "pg_catalog",
+        "pg_catalog",
+        "pg_catalog",
+        "pg_catalog"
+      ],
+      "input_oids": [
+        25,
+        25,
+        25,
+        25,
+        25,
+        1009,
+        1009
+      ],
+      "nspname": "realtime",
+      "oid": 17784,
+      "prokind": "f",
+      "pronamespace": 16559
+    },
+    "routine_acl_effective": [
+      {
+        "grantee": 0,
+        "grantee_name": "PUBLIC",
+        "grantor": 17270,
+        "grantor_name": "supabase_realtime_admin",
+        "is_grantable": false,
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": 16388,
+        "grantee_name": "postgres",
+        "grantor": 17270,
+        "grantor_name": "supabase_realtime_admin",
+        "is_grantable": false,
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": 16555,
+        "grantee_name": "dashboard_user",
+        "grantor": 17270,
+        "grantor_name": "supabase_realtime_admin",
+        "is_grantable": false,
+        "privilege_type": "EXECUTE"
+      },
+      {
+        "grantee": 17270,
+        "grantee_name": "supabase_realtime_admin",
+        "grantor": 17270,
+        "grantor_name": "supabase_realtime_admin",
+        "is_grantable": false,
+        "privilege_type": "EXECUTE"
+      }
+    ],
+    "routine_acl_raw": [
+      {
+        "default_acl": "{=X/supabase_realtime_admin,supabase_realtime_admin=X/supabase_realtime_admin}",
+        "proacl_is_null": false,
+        "raw_proacl": "{=X/supabase_realtime_admin,supabase_realtime_admin=X/supabase_realtime_admin,postgres=X/supabase_realtime_admin,dashboard_user=X/supabase_realtime_admin}"
+      }
+    ],
+    "schema_acl_effective": [
+      {
+        "grantee": 10,
+        "grantee_name": "supabase_admin",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "CREATE"
+      },
+      {
+        "grantee": 10,
+        "grantee_name": "supabase_admin",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": 16388,
+        "grantee_name": "postgres",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": true,
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": 16484,
+        "grantee_name": "anon",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": 16485,
+        "grantee_name": "authenticated",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": 16486,
+        "grantee_name": "service_role",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "USAGE"
+      },
+      {
+        "grantee": 17270,
+        "grantee_name": "supabase_realtime_admin",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "CREATE"
+      },
+      {
+        "grantee": 17270,
+        "grantee_name": "supabase_realtime_admin",
+        "grantor": 10,
+        "grantor_name": "supabase_admin",
+        "is_grantable": false,
+        "privilege_type": "USAGE"
+      }
+    ],
+    "schema_acl_raw": [
+      {
+        "acl_is_null": false,
+        "default_acl": "{supabase_admin=UC/supabase_admin}",
+        "nspname": "realtime",
+        "nspowner": 10,
+        "oid": 16559,
+        "owner": "supabase_admin",
+        "raw_acl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,service_role=U/supabase_admin,supabase_realtime_admin=UC/supabase_admin,authenticated=U/supabase_admin}"
+      }
+    ],
+    "type_bindings": [
+      {
+        "nspname": "pg_catalog",
+        "oid": 25,
+        "typelem": 0,
+        "typname": "text",
+        "typnamespace": 11,
+        "typtype": "b"
+      },
+      {
+        "nspname": "pg_catalog",
+        "oid": 1000,
+        "typelem": 16,
+        "typname": "_bool",
+        "typnamespace": 11,
+        "typtype": "b"
+      },
+      {
+        "nspname": "pg_catalog",
+        "oid": 1009,
+        "typelem": 25,
+        "typname": "_text",
+        "typnamespace": 11,
+        "typtype": "b"
+      },
+      {
+        "nspname": "pg_catalog",
+        "oid": 2249,
+        "typelem": 0,
+        "typname": "record",
+        "typnamespace": 11,
+        "typtype": "p"
+      }
+    ]
+  },
+  "targeted_evidence_sha256": "9dc1911c466a4f9d7d22dcc936158ee23aa45b6322f49dbcf07fc8ada7e5bcca",
+  "version": 1
+}

@@ -1,0 +1,17 @@
+{
+  "base_manifest_sha256": "60efef97d11e85a0be679a32f5aa3163f35017f4bebf8d6120bdb183731734e0",
+  "candidate_schema": "jous.step7.unresolved-amendment",
+  "execution_approved": false,
+  "migration_0002_git_blob": "cae08d9cf548480fb5d064becca1e89ca2dd898b",
+  "operator": {
+    "oid": 514,
+    "oprcanhash": null,
+    "oprcanmerge": null
+  },
+  "raw_policy_contract": null,
+  "required_evidence": [
+    "operator 514 strict boolean oprcanmerge/oprcanhash",
+    "independently reviewed exact opaque raw policy catalog contract"
+  ],
+  "status": "UNRESOLVED_MANAGED_EVIDENCE"
+}
