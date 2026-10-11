@@ -306,8 +306,60 @@ def structurally_permitted_transition(before, after, command, evidence=None):
     """
     _require(type(before) is ReservationValue and type(after) is ReservationValue)
     _require(type(command) is Command)
+    if (before.database_ids != after.database_ids
+            or before.immutable_database_projection != after.immutable_database_projection):
+        return False
+    return _structural_rule(before, after, command, evidence)
+
+
+@dataclass(frozen=True)
+class DurableStructuralProjection:
+    """Verified retained projection; no UUID reconstruction or permission claim."""
+    reservation_id: str
+    fixture_set_id: str
+    owner: str
+    binding: Binding
+    status: LeaseStatus
+    expires_at: int
+    completion_deadline: int
+    revision: int
+    immutable_database_projection: bytes
+    projection_sha256: bytes
+    claims: tuple[ConflictKey, ...]
+    register_id: str
+
+    def __post_init__(self):
+        for value in (self.reservation_id, self.fixture_set_id, self.owner, self.register_id):
+            _text(value, 255)
+        _require(type(self.binding) is Binding and type(self.status) is LeaseStatus)
+        for value in (self.expires_at, self.completion_deadline):
+            _require(type(value) is int and -(1 << 63) <= value < (1 << 63))
+        _require(self.expires_at > self.completion_deadline)
+        _require(type(self.revision) is int and 0 <= self.revision < (1 << 63))
+        _require(type(self.immutable_database_projection) is bytes
+                 and 1 <= len(self.immutable_database_projection) <= MAX_ARTIFACT_BYTES)
+        _require(type(self.projection_sha256) is bytes and len(self.projection_sha256) == 32)
+        _require(sha256(self.immutable_database_projection).digest() == self.projection_sha256)
+        keys = canonical_conflict_set(self.claims)
+        _require(len(keys) == len(self.claims))
+        _require(bool(self.claims) == claims_remain_blocking(self.status))
+
+
+def durably_permitted_transition(before, after, command, evidence=None):
+    """Necessary durable shape only, after independently verified projection integrity."""
+    _require(type(before) is DurableStructuralProjection
+             and type(after) is DurableStructuralProjection)
+    _require(type(command) is Command)
+    if (before.register_id != after.register_id
+            or before.immutable_database_projection != after.immutable_database_projection):
+        return False
+    return _structural_rule(before, after, command, evidence)
+
+
+def _structural_rule(before, after, command, evidence):
+    """The single operation matrix shared by full and durable entries."""
     fixed = ("reservation_id", "fixture_set_id", "owner", "expires_at",
-             "completion_deadline", "database_ids", "immutable_database_projection")
+             "completion_deadline")
     if any(getattr(before, field) != getattr(after, field) for field in fixed):
         return False
     if after.revision != before.revision + 1 or before.status is LeaseStatus.RELEASED:

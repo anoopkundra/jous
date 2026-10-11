@@ -314,6 +314,45 @@ class DomainTests(unittest.TestCase):
         self.assertFalse(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                              and node.func.id in forbidden for node in ast.walk(tree)))
 
+    def durable(self, value):
+        return c.DurableStructuralProjection(value.reservation_id,value.fixture_set_id,value.owner,
+            value.binding,value.status,value.expires_at,value.completion_deadline,value.revision,
+            value.immutable_database_projection,hashlib.sha256(value.immutable_database_projection).digest(),
+            value.claims,'synthetic-register')
+
+    def test_shared_rule_full_durable_equivalence(self):
+        released=replace(self.reservation,status=c.LeaseStatus.RELEASED,claims=(),revision=1)
+        quarantined=replace(self.reservation,status=c.LeaseStatus.QUARANTINED)
+        release=c.ArtifactBytes(c.ArtifactType.RELEASE_EVIDENCE,b'evidence')
+        recovery=c.ArtifactBytes(c.ArtifactType.RECOVERY_EVIDENCE,b'evidence')
+        cases=((self.reservation,self.bound_next(),c.Command.ADVANCE,None,True),
+            (self.reservation,replace(self.reservation,revision=1),c.Command.ADVANCE,None,False),
+            (self.reservation,replace(self.reservation,revision=1),c.Command.RECORD_EXECUTION,None,True),
+            (self.reservation,replace(self.reservation,revision=1,claims=self.keys[1:]),c.Command.RECORD_EXECUTION,None,False),
+            (self.reservation,replace(quarantined,revision=1),c.Command.QUARANTINE,None,True),
+            (quarantined,released,c.Command.RELEASE,release,False),
+            (quarantined,released,c.Command.RECOVER,recovery,True))
+        for before,after,kind,evidence,expected in cases:
+            with self.subTest(kind=kind,expected=expected):
+                self.assertEqual(c.structurally_permitted_transition(before,after,kind,evidence),expected)
+                self.assertEqual(c.durably_permitted_transition(self.durable(before),self.durable(after),kind,evidence),expected)
+
+    def test_full_uuid_order_and_projection_remain_fixed(self):
+        after=replace(self.reservation,revision=1)
+        for changed in (replace(after,database_ids=tuple(reversed(self.ids))),
+                        replace(after,immutable_database_projection=b'changed')):
+            self.assertFalse(c.structurally_permitted_transition(self.reservation,changed,c.Command.RECORD_EXECUTION))
+
+    def test_durable_integrity_domains_and_no_uuid_fields(self):
+        before=self.durable(self.reservation);after=replace(before,revision=1)
+        self.assertFalse(hasattr(before,'database_ids'))
+        for kwargs in ({'projection_sha256':b'z'*32},{'revision':True},{'revision':1<<63},
+                       {'claims':before.claims+before.claims[:1]}):
+            with self.assertRaises(c.ContractRejected):replace(after,**kwargs)
+        changed=replace(after,immutable_database_projection=b'changed',
+                        projection_sha256=hashlib.sha256(b'changed').digest())
+        self.assertFalse(c.durably_permitted_transition(before,changed,c.Command.RECORD_EXECUTION))
+
 
 if __name__ == '__main__':
     unittest.main()

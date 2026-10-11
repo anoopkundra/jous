@@ -471,12 +471,150 @@ def _validate_register(connection, register_id):
 
 
 class TransactionWriter:
-    """Typed insert-only primitives, no SQL, transitions, delete, replay or ack builder."""
+    """Fixed typed transaction primitives; no SQL or command/protocol policy API."""
     def __init__(self, store):
         self._store = store
         self._active = True
         self._failed = False
         self.result = None
+
+    def _check(self):
+        _require(self._active and not self._failed and self._store._writer is self
+                 and not self._store._poisoned)
+
+    def _reject(self, error):
+        self._failed = True
+        if isinstance(error, sqlite3.Error) and getattr(error, 'sqlite_errorcode', 0) & 255 in (
+                sqlite3.SQLITE_FULL, sqlite3.SQLITE_IOERR, sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
+            self._store._poisoned = True
+        if isinstance(error, (StorageRejected, sqlite3.Error)):
+            raise StorageRejected('TRANSACTION_PRIMITIVE_REJECTED') from None
+        raise error
+
+    def lookup(self, row_type, key):
+        """One fixed primary-key lookup in this writer's snapshot."""
+        self._check()
+        try:
+            _require(row_type in SPECS)
+            _validate(key, SPECS[row_type][1][0])
+            names = ','.join(field.name for field in fields(row_type))
+            table = SPECS[row_type][0]
+            primary = fields(row_type)[0].name
+            rows = self._store._connection.execute(
+                f'SELECT {names} FROM {table} WHERE {primary}=?', (key,)).fetchmany(2)
+            _require(len(rows) <= 1)
+            return None if not rows else _decode(row_type, rows[0])
+        except BaseException as error:
+            self._reject(error)
+
+    def iter_rows(self, row_type):
+        """One-pass validated rows, with exact byte ordering for IDs/keys."""
+        self._check()
+        try:
+            _require(row_type in SPECS)
+            names = ','.join(field.name for field in fields(row_type))
+            primary = fields(row_type)[0].name
+            order = primary if row_type in (MetadataRow, EventRow, ClaimRow) else f'CAST({primary} AS BLOB)'
+            cursor = self._store._connection.execute(
+                f'SELECT {names} FROM {SPECS[row_type][0]} ORDER BY {order}')
+            try:
+                for values in cursor:
+                    self._check()
+                    yield _decode(row_type, values)
+            finally:
+                cursor.close()
+        except BaseException as error:
+            self._reject(error)
+
+    def event_interval(self, first_sequence, final_sequence):
+        self._check()
+        try:
+            _validate(first_sequence, UINT)
+            _validate(final_sequence, UINT)
+            _require(1 <= first_sequence <= final_sequence)
+            names = ','.join(field.name for field in fields(EventRow))
+            cursor = self._store._connection.execute(
+                f'SELECT {names} FROM EVENTS WHERE event_sequence BETWEEN ? AND ? ORDER BY event_sequence',
+                (first_sequence, final_sequence))
+            try:
+                for values in cursor:
+                    self._check()
+                    yield _decode(EventRow, values)
+            finally:
+                cursor.close()
+        except BaseException as error:
+            self._reject(error)
+
+    def claims_for(self, reservation_id):
+        self._check()
+        try:
+            _validate(reservation_id, ID)
+            names = ','.join(field.name for field in fields(ClaimRow))
+            cursor = self._store._connection.execute(
+                f'SELECT {names} FROM BLOCKING_CLAIMS WHERE reservation_id=? ORDER BY canonical_key',
+                (reservation_id,))
+            try:
+                for values in cursor:
+                    self._check()
+                    yield _decode(ClaimRow, values)
+            finally:
+                cursor.close()
+        except BaseException as error:
+            self._reject(error)
+
+    def replace_reservation(self, expected, replacement):
+        """Exact old row and one revision step; never UPSERT or adoption."""
+        self._check()
+        try:
+            _require(type(expected) is ReservationRow and type(replacement) is ReservationRow)
+            _validate_row(expected)
+            _validate_row(replacement)
+            _require(expected.reservation_id == replacement.reservation_id
+                     and expected.revision < MAX_INTEGER and replacement.revision == expected.revision + 1)
+            _require(self.lookup(ReservationRow, expected.reservation_id) == expected)
+            names = tuple(field.name for field in fields(ReservationRow))
+            assignment = ','.join(name + '=?' for name in names)
+            cursor = self._store._connection.execute(
+                f'UPDATE RESERVATIONS SET {assignment} WHERE reservation_id=? AND revision=?',
+                _values(replacement) + (expected.reservation_id, expected.revision))
+            _require(cursor.rowcount == 1)
+        except BaseException as error:
+            self._reject(error)
+
+    def delete_claim(self, expected):
+        """Delete only the exact supplied key/owner row; eligibility is external."""
+        self._check()
+        try:
+            _require(type(expected) is ClaimRow)
+            _validate_row(expected)
+            _require(self.lookup(ClaimRow, expected.canonical_key) == expected)
+            cursor = self._store._connection.execute(
+                'DELETE FROM BLOCKING_CLAIMS WHERE canonical_key=? AND reservation_id=? '
+                'AND introduced_revision=? AND originating_artifact_id=?', _values(expected))
+            _require(cursor.rowcount == 1)
+        except BaseException as error:
+            self._reject(error)
+
+    def complete_metadata(self, expected, replacement):
+        """Checked head/digest/time completion, preserving generation and pins."""
+        self._check()
+        try:
+            _require(type(expected) is MetadataRow and type(replacement) is MetadataRow)
+            _validate_row(expected)
+            _validate_row(replacement)
+            allowed = {'last_event_sequence', 'last_event_digest', 'state_digest', 'last_valid_utc'}
+            _require(all(getattr(expected, field.name) == getattr(replacement, field.name)
+                         for field in fields(MetadataRow) if field.name not in allowed))
+            _require(self.lookup(MetadataRow, 1) == expected)
+            cursor = self._store._connection.execute(
+                'UPDATE REGISTER_METADATA SET last_event_sequence=?,last_event_digest=?,state_digest=?,last_valid_utc=? '
+                'WHERE singleton=1 AND last_event_sequence=? AND last_event_digest=? AND state_digest=? AND last_valid_utc=?',
+                (replacement.last_event_sequence, replacement.last_event_digest, replacement.state_digest,
+                 replacement.last_valid_utc, expected.last_event_sequence, expected.last_event_digest,
+                 expected.state_digest, expected.last_valid_utc))
+            _require(cursor.rowcount == 1)
+        except BaseException as error:
+            self._reject(error)
 
     def insert(self, row):
         if not self._active or self._failed or self._store._writer is not self or self._store._poisoned:
