@@ -16,7 +16,7 @@ PACKAGE = '_il4b_synthetic'
 package = types.ModuleType(PACKAGE)
 package.__path__ = [str(ROOT / 'services/api/infrastructure')]
 sys.modules[PACKAGE] = package
-for name in ('fixture_lease_contract', 'fixture_lease_protocol', 'fixture_lease_store', 'fixture_lease_commands'):
+for name in ('fixture_lease_contract', 'fixture_lease_protocol', 'fixture_lease_store', 'fixture_lease_service', 'fixture_lease_commands'):
     spec = importlib.util.spec_from_file_location(PACKAGE + '.' + name,
         ROOT / 'services/api/infrastructure' / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
@@ -28,6 +28,22 @@ c = sys.modules[PACKAGE + '.fixture_lease_contract']
 p = sys.modules[PACKAGE + '.fixture_lease_protocol']
 s = sys.modules[PACKAGE + '.fixture_lease_store']
 core = sys.modules[PACKAGE + '.fixture_lease_commands']
+
+
+def command_import_boundary(tree):
+    expected={
+        (0,'dataclasses',( ('dataclass',None),('fields',None),('replace',None) )),
+        (0,'hashlib',( ('sha256',None), )),
+        (1,None,( ('fixture_lease_protocol','p'), )),
+        (1,None,( ('fixture_lease_store','s'), )),
+        (1,None,( ('fixture_lease_service','service'), )),
+    }
+    observed=[]
+    for node in ast.walk(tree):
+        if isinstance(node,ast.Import):return False
+        if isinstance(node,ast.ImportFrom):
+            observed.append((node.level,node.module,tuple((a.name,a.asname) for a in node.names)))
+    return len(observed)==len(expected) and set(observed)==expected
 
 
 class CommandsTests(unittest.TestCase):
@@ -612,8 +628,8 @@ class CommandsTests(unittest.TestCase):
         imports={node.module for node in ast.walk(store_ast) if isinstance(node,ast.ImportFrom)}
         self.assertEqual(imports,{'contextlib','dataclasses','enum','hashlib','pathlib','fixture_lease_contract'})
         commands_ast=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text())
-        self.assertFalse(any(isinstance(node,ast.ImportFrom) and node.module and
-            'service' in node.module for node in ast.walk(commands_ast)))
+        self.assertTrue(command_import_boundary(commands_ast))
+
 
     def structural_status(self, status):
         # Synthetic durable setup, not lifecycle policy. Rebind exact STATE digest.
@@ -779,6 +795,245 @@ class CommandsTests(unittest.TestCase):
         self.assertTrue(result.replayed)
         self.assertEqual(result.retained_ack_bytes,first.retained_ack_bytes)
         self.assertEqual(before,self.snapshot())
+
+    def admission_evidence(self, command=None, material=None):
+        v=core.service;command=self.command if command is None else command
+        material=self.material if material is None else material
+        ref=v.EvidenceReference('qualified',b'q'*32)
+        metadata=self.store.read_rows(s.MetadataRow)[0]
+        cp=v.EvidenceReference('predecessor',sha256(b'synthetic-predecessor').digest())
+        activation=v.ActivationIdentity('g',1,'x','host',cp)
+        context=v.CommandContext(command.command_id,p.command_digest(command),command.command_kind,
+            command.operation,command.phase,command.expected_revision,
+            v.EvidenceReference(command.authorization_reference.artifact_id,command.authorization_reference.artifact_sha256))
+        predecessor=v.ResolvedCheckpointEvidence(cp,b'synthetic-predecessor',activation,0,
+            metadata.last_event_sequence,metadata.last_event_digest,metadata.state_digest,p.STATE_2,ref)
+        permit=v.CommandPermit(context,activation,0,100,ref)
+        required=command.command_kind in (c.Command.ACQUIRE,c.Command.ADVANCE,c.Command.RELEASE,c.Command.RECOVER)
+        envelope=v.RetainedAdmissionEnvelope(ref,p.command_bytes(command),context,command.authenticated_principal,
+            permit.evidence,activation,predecessor,
+            v.ApprovalApplicability.REQUIRED if required else v.ApprovalApplicability.NOT_APPLICABLE,
+            v.EvidenceReference('approval',command.approval_record_hash) if required else None,
+            material.utc_time,v.UtcInterval(material.utc_time,material.utc_time),ref)
+        anchor=v.MonotonicPoint('test-process','test-domain',0)
+        sample=v.QualifiedSample(ref,'test-source',ref,ref,v.UtcInterval(material.utc_time,material.utc_time),anchor)
+        profile=v.QualifiedClockProfile(ref,'test-source',ref,1000,1000,10,0)
+        propagation=v.QualifiedPropagationError(ref,ref,0,0,ref)
+        evidence=v.AdmissionEvidence(envelope,permit,sample,profile,anchor,propagation,
+            v.AdmissionCoverage(ref,envelope.reference,context,activation,anchor,sample.utc),
+            v.InclusiveDeadline(100),v.StrictDeadline(100),v.EvidenceValidity.VALID,v.EvidenceValidity.VALID,
+            v.TimingApplicability.REQUIRED,v.TimingApplicability.REQUIRED)
+        fixing=v.RetainedTimeFixing(envelope.reference,context,activation,sample,profile,anchor,propagation)
+        evidence=replace(evidence,envelope=replace(envelope,fixing=fixing))
+        return evidence,ref
+
+    def admitted(self, command=None, material=None, evidence=None, checker=None, host='host'):
+        command=self.command if command is None else command
+        material=self.material if material is None else material
+        valid,authority=self.admission_evidence(command,material)
+        return core.complete_admitted(self.store,command,self.context,material,
+            evidence=valid if evidence is None else evidence,host_identity=host,
+            representation_authority=authority,checker=core.service.validate_admission if checker is None else checker)
+
+    def test_il5a_valid_admission_shared_mutation_path(self):
+        result=self.admitted()
+        self.assertEqual(result.outcome,p.OutcomeCode.SUCCESS)
+        self.assertEqual(self.store.read_rows(s.CommandRow)[0].canonical_payload_bytes,p.command_bytes(self.command))
+        command,material=self.mutate()
+        self.assertEqual(self.admitted(command,material).outcome,p.OutcomeCode.SUCCESS)
+        self.assertEqual(self.store.read_rows(s.ReservationRow)[0].revision,1)
+
+    def test_il5a_historical_replay_and_mismatch_bypass_seam(self):
+        first=self.execute()
+        command,material=self.mutate();self.execute(command,material)
+        before=self.snapshot()
+        def forbidden(*args):raise AssertionError('seam invoked')
+        replay=core.complete_admitted(self.store,self.command,self.context,checker=forbidden)
+        self.assertTrue(replay.replayed);self.assertEqual(replay.retained_ack_bytes,first.retained_ack_bytes)
+        changed=replace(self.command,authenticated_principal='changed')
+        mismatch=core.complete_admitted(self.store,changed,self.context,checker=forbidden)
+        self.assertEqual(mismatch.outcome,p.OutcomeCode.REPLAY_MISMATCH)
+        self.assertEqual(before,self.snapshot())
+
+    def test_il5a_checker_reject_exception_and_malformed_zero_effect(self):
+        v=core.service
+        def exception(*args):raise RuntimeError('synthetic checker error')
+        checkers=(exception,lambda *a:True,lambda *a:None,
+                  lambda *a:v.AdmissionDecision(v.AdmissionDisposition.REJECT,v.AdmissionReason.UNAVAILABLE))
+        for checker in checkers:
+            before=self.snapshot()
+            with self.assertRaises(core.CommandRejected):self.admitted(checker=checker)
+            self.assertEqual(before,self.snapshot());self.assertFalse(self.store._poisoned)
+        self.assertEqual(self.admitted().outcome,p.OutcomeCode.SUCCESS)
+
+    def test_il5a_evidence_failures_six_table_zero_effect(self):
+        v=core.service;evidence,_=self.admission_evidence()
+        activation=evidence.envelope.activation
+        variants=(replace(evidence,permit=None),
+            replace(evidence,permit_validity=v.EvidenceValidity.INVALID),
+            replace(evidence,permit=replace(evidence.permit,valid_until_us=0)),
+            replace(evidence,permit=replace(evidence.permit,activation=replace(activation,activation_id='wrong'))),
+            replace(evidence,permit=replace(evidence.permit,activation=replace(activation,generation=2))),
+            replace(evidence,envelope=replace(evidence.envelope,approval=None)),
+            replace(evidence,envelope=replace(evidence.envelope,approval_applicability=v.ApprovalApplicability.UNKNOWN)),
+            replace(evidence,approval_validity=v.EvidenceValidity.UNKNOWN),
+            replace(evidence,admission_coverage=None),
+            replace(evidence,envelope=replace(evidence.envelope,principal='wrong')),
+            replace(evidence,envelope=replace(evidence.envelope,predecessor=replace(
+                evidence.envelope.predecessor,representation_authority=v.EvidenceReference('wrong',b'z'*32)))),
+            replace(evidence,envelope=replace(evidence.envelope,predecessor=replace(
+                evidence.envelope.predecessor,representation='unknown'))))
+        for variant in variants:
+            before=self.snapshot()
+            with self.assertRaises(core.CommandRejected):self.admitted(evidence=variant)
+            self.assertEqual(before,self.snapshot());self.assertFalse(self.store._poisoned)
+        before=self.snapshot()
+        with self.assertRaises(core.CommandRejected):self.admitted(host='wrong')
+        self.assertEqual(before,self.snapshot())
+
+    def test_il5a_time_overlap_coverage_and_utc_zero_effect(self):
+        v=core.service;evidence,_=self.admission_evidence()
+        overlap=v.UtcInterval(0,1)
+        variants=(replace(evidence,sample=replace(evidence.sample,utc=overlap),
+            admission_coverage=replace(evidence.admission_coverage,interval=overlap),
+            permit=replace(evidence.permit,valid_until_us=1)),
+            replace(evidence,admission_coverage=replace(evidence.admission_coverage,
+                context=replace(evidence.envelope.context,command_id='wrong'))),
+            replace(evidence,envelope=replace(evidence.envelope,fixed_utc_us=1,fixing_interval=v.UtcInterval(1,1))))
+        for variant in variants:
+            before=self.snapshot()
+            with self.assertRaises(core.CommandRejected):self.admitted(evidence=variant)
+            self.assertEqual(before,self.snapshot())
+
+    def test_il5a_seam_after_structure_before_first_write(self):
+        trace=[];original_transition=core._transition;original_insert=s.TransactionWriter.insert
+        def transition(*args):
+            original_transition(*args);trace.append('structure')
+        def checker(evidence,facts):
+            self.assertTrue(self.store._writer._active)
+            self.assertIs(type(facts),core.service.AdmissionFacts)
+            self.assertFalse(hasattr(facts,'writer'));self.assertFalse(hasattr(facts,'store'))
+            trace.append('admission');return core.service.validate_admission(evidence,facts)
+        def insert(writer,row):
+            self.assertIn('admission',trace);trace.append('write');return original_insert(writer,row)
+        with patch.object(core,'_transition',transition),patch.object(s.TransactionWriter,'insert',insert):
+            self.admitted(checker=checker)
+        self.assertEqual(trace[:3],['structure','admission','write'])
+
+    def test_il5a_stale_and_structural_rejection_precede_seam(self):
+        self.execute();command,material=self.mutate(expected=1)
+        checker=unittest.mock.Mock(side_effect=AssertionError('seam'))
+        before=self.snapshot()
+        with self.assertRaises(core.CommandRejected):self.admitted(command,material,checker=checker)
+        checker.assert_not_called();self.assertEqual(before,self.snapshot())
+        command,material=self.structural_advance(c.Phase.PRE_AUTH)
+        before=self.snapshot()
+        with self.assertRaises(core.CommandRejected):self.admitted(command,material,checker=checker)
+        checker.assert_not_called();self.assertEqual(before,self.snapshot())
+
+    def test_il5a_no_clock_or_capability_acquisition(self):
+        v=core.service
+        with (patch.object(v.RejectingCapabilities,'obtain',side_effect=AssertionError('permit')),
+              patch.object(v.RejectingCapabilities,'publish',side_effect=AssertionError('publish'))):
+            self.admitted()
+        tree=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text())
+        forbidden={'sleep','open','connect','time','now','measure','obtain','publish','complete_original'}
+        self.assertFalse(any(isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
+            and node.func.attr in forbidden for node in ast.walk(tree)))
+
+    def test_il5a_admitted_commit_ack_loss_preserves_unknown(self):
+        evidence,authority=self.admission_evidence()
+        connection=self.store._connection;calls=[]
+        class LostAck:
+            def __getattr__(self,name):return getattr(connection,name)
+            def execute(self,sql,*args):
+                calls.append(sql);result=connection.execute(sql,*args)
+                if sql=='COMMIT':raise sqlite3.OperationalError('synthetic lost ACK')
+                return result
+        self.store._connection=LostAck()
+        result=core.complete_admitted(self.store,self.command,self.context,self.material,
+            evidence=evidence,host_identity='host',representation_authority=authority)
+        self.assertEqual(result.outcome,p.OutcomeCode.STORAGE_UNKNOWN)
+        self.assertIsNone(result.retained_ack_bytes);self.assertTrue(self.store._poisoned)
+        self.assertEqual(calls.count('COMMIT'),1);self.assertNotIn('ROLLBACK',calls)
+        self.assertEqual(self.raw('SELECT outcome_code FROM COMMANDS'),[('SUCCESS',)])
+
+    def test_il5a_admitted_rollback_uncertainty(self):
+        evidence,authority=self.admission_evidence()
+        connection=self.store._connection;calls=[]
+        class BrokenRollback:
+            def __getattr__(self,name):return getattr(connection,name)
+            def execute(self,sql,*args):
+                calls.append(sql)
+                if sql=='ROLLBACK':raise sqlite3.OperationalError('synthetic rollback failure')
+                return connection.execute(sql,*args)
+        self.store._connection=BrokenRollback()
+        with patch.object(core,'_append',side_effect=core.CommandRejected('synthetic')):
+            result=core.complete_admitted(self.store,self.command,self.context,self.material,
+            evidence=evidence,host_identity='host',representation_authority=authority)
+        self.assertEqual(result.outcome,p.OutcomeCode.STORAGE_UNKNOWN)
+        self.assertIsNone(result.retained_ack_bytes);self.assertTrue(self.store._poisoned)
+        self.assertEqual(calls.count('ROLLBACK'),1);self.assertNotIn('COMMIT',calls)
+
+    def test_il5a_checker_cannot_override_mandatory_binding_rejection(self):
+        v=core.service;evidence,_=self.admission_evidence()
+        invalid=replace(evidence,permit_validity=v.EvidenceValidity.INVALID)
+        checker=unittest.mock.Mock(return_value=v.AdmissionDecision(v.AdmissionDisposition.ADMIT,None))
+        before=self.snapshot()
+        with self.assertRaises(core.CommandRejected):self.admitted(evidence=invalid,checker=checker)
+        checker.assert_not_called();self.assertEqual(before,self.snapshot())
+        self.assertFalse(self.store._poisoned)
+
+    def refreshed_command_evidence(self):
+        v=core.service;evidence,authority=self.admission_evidence();fixing=evidence.envelope.fixing
+        anchor=replace(fixing.sample.anchor,ticks_ns=1000)
+        sample=replace(fixing.sample,sample=v.EvidenceReference('refresh',b'r'*32),
+            validation=v.EvidenceReference('current-validation',b'v'*32),utc=v.UtcInterval(1,1),anchor=anchor)
+        error=v.QualifiedPropagationError(fixing.sample.sample,fixing.sample.profile,1000,0,authority)
+        propagation=v.QualifiedPropagationError(sample.sample,sample.profile,0,0,authority)
+        evidence=replace(evidence,sample=sample,current=anchor,propagation=propagation,
+            fixing_to_refresh=error,admission_coverage=replace(evidence.admission_coverage,point=anchor,interval=sample.utc))
+        return evidence,authority
+
+    def test_il5a_refresh_real_admitted_path_keeps_original_envelope(self):
+        v=core.service;evidence,authority=self.refreshed_command_evidence();envelope=evidence.envelope
+        material=replace(self.material,last_valid_utc=1)
+        self.assertNotEqual(envelope.time_qualification,evidence.sample.validation)
+        self.assertTrue(v.refresh_consistent(envelope.fixing.sample,evidence.sample,evidence.profile,evidence.fixing_to_refresh))
+        result=core.complete_admitted(self.store,self.command,self.context,material,evidence=evidence,
+            host_identity='host',representation_authority=authority)
+        self.assertEqual(result.outcome,p.OutcomeCode.SUCCESS)
+        self.assertEqual(p.decode_record(result.retained_ack_bytes,p.AckPayload).issued_at,0)
+        self.assertEqual(self.store.read_rows(s.MetadataRow)[0].last_valid_utc,1)
+        self.assertIs(evidence.envelope,envelope);self.assertEqual(envelope.time_qualification,envelope.fixing.sample.validation)
+
+    def test_il5a_refresh_real_inconsistent_path_six_table_zero_effect(self):
+        v=core.service;evidence,authority=self.refreshed_command_evidence()
+        sample=replace(evidence.sample,utc=v.UtcInterval(50,50))
+        invalid=replace(evidence,sample=sample,admission_coverage=replace(evidence.admission_coverage,interval=sample.utc))
+        self.assertFalse(v.refresh_consistent(evidence.envelope.fixing.sample,sample,evidence.profile,evidence.fixing_to_refresh))
+        before=self.snapshot();checker=unittest.mock.Mock(return_value=v.AdmissionDecision(v.AdmissionDisposition.ADMIT,None))
+        with self.assertRaises(core.CommandRejected):
+            core.complete_admitted(self.store,self.command,self.context,replace(self.material,last_valid_utc=50),
+                evidence=invalid,host_identity='host',representation_authority=authority,checker=checker)
+        checker.assert_not_called();self.assertEqual(before,self.snapshot());self.assertFalse(self.store._poisoned)
+        result=core.complete_admitted(self.store,self.command,self.context,replace(self.material,last_valid_utc=1),
+            evidence=evidence,host_identity='host',representation_authority=authority)
+        self.assertEqual(result.outcome,p.OutcomeCode.SUCCESS)
+
+    def test_il5a_architecture_exact_origin_positive_negative(self):
+        production=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text(encoding='utf-8'))
+        self.assertTrue(command_import_boundary(production))
+        for source in ('from .orchestration_service import fixture_lease_service as service',
+                       'from .orchestration_service import fixture_lease_service',
+                       'from .. import fixture_lease_service as service',
+                       'from .provider import fixture_lease_service as service'):
+            probe=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text(encoding='utf-8')
+                           .replace('from . import fixture_lease_service as service',source))
+            self.assertFalse(command_import_boundary(probe),source)
+        missing=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text(encoding='utf-8')
+                         .replace('from . import fixture_lease_service as service',''))
+        self.assertFalse(command_import_boundary(missing))
 
 
 if __name__=='__main__':

@@ -8,6 +8,7 @@ from hashlib import sha256
 
 from . import fixture_lease_protocol as p
 from . import fixture_lease_store as s
+from . import fixture_lease_service as service
 
 
 class CommandRejected(ValueError):
@@ -268,7 +269,7 @@ def _append(writer, metadata, command, material):
     return tuple(events), tuple(digests)
 
 
-def complete(store, command, context, material=None):
+def _complete(store, command, context, material=None, admission=None):
     """One local transaction; supplied facts are not self-authenticating authority.
 
     Replay material is ignored after exact durable recognition. This result is
@@ -296,6 +297,8 @@ def complete(store, command, context, material=None):
             else:
                 previous = writer.lookup(s.ReservationRow, command.parameters.target_reservation_id)
                 _transition(writer, metadata, command, material, previous)
+                if admission is not None:
+                    _admit(writer, metadata, command, raw, context, material, previous, admission)
                 if previous is None:
                     writer.insert(material.reservation)
                 else:
@@ -335,3 +338,59 @@ def complete(store, command, context, material=None):
         return replace(result, storage_result=writer.result)
     except s.StorageOutcomeUncertain:
         return LocalCommandResult(p.OutcomeCode.STORAGE_UNKNOWN, None, False, None)
+
+
+
+def complete(store, command, context, material=None):
+    """Legacy local-only completion; no IL.5 operational admission/delivery."""
+    return _complete(store, command, context, material)
+
+
+def complete_admitted(store: s.LeaseStore, command: p.CommandPayload, context: p.StateContext,
+                      material: PreparedTransition | None = None, *,
+                      evidence: service.AdmissionEvidence | None = None,
+                      host_identity: str | None = None,
+                      representation_authority: service.EvidenceReference | None = None,
+                      checker: service.AdmissionChecker = service.validate_admission) -> LocalCommandResult:
+    """Distinct IL.5A entry. No external acquisition, orchestration or delivery.
+
+    Checker contract is synchronous/pure and receives no writer/store/connection.
+    Already-qualified inputs do not gain qualification by construction here.
+    Replay bypasses new admission, including unavailable evidence/checker.
+    """
+    return _complete(store, command, context, material,
+                     (evidence, host_identity, representation_authority, checker))
+
+
+def _admit(writer, metadata, command, raw, context, material, previous, admission):
+    evidence, host, representation_authority, checker = admission
+    approval_ref = (command.binding_reference if command.command_kind in
+        (p.contract.Command.ACQUIRE, p.contract.Command.ADVANCE)
+        else command.parameters.primary_evidence_reference)
+    artifact = writer.lookup(s.ArtifactRow, approval_ref.artifact_id)
+    refs = (command.binding_reference, command.authorization_reference) + command.evidence_references
+    retained = tuple(service.EvidenceReference(ref.artifact_id,
+        writer.lookup(s.ArtifactRow, ref.artifact_id).sha256) for ref in refs)
+    # All durable inputs are read while the same writer transaction is active.
+    try:
+        facts = service.AdmissionFacts(raw,
+            service.CommandContext(command.command_id, sha256(raw).digest(), command.command_kind,
+                command.operation, command.phase, command.expected_revision,
+                service.EvidenceReference(command.authorization_reference.artifact_id,
+                                          command.authorization_reference.artifact_sha256)),
+            command.authenticated_principal, metadata.register_id, metadata.issuer_generation,
+            metadata.activation_id, host, context.representation, representation_authority,
+            metadata.last_event_sequence, metadata.last_event_digest, metadata.state_digest,
+            bool(metadata.recovery_required), None if previous is None else previous.revision,
+            tuple(claim.canonical_key for claim in writer.claims_for(material.reservation.reservation_id)),
+            retained, artifact.approval_record_hash, metadata.last_valid_utc,
+            material.utc_time, material.last_valid_utc)
+        # An injected pure checker cannot weaken mandatory published bindings.
+        decision = service.validate_admission(evidence, facts)
+        require(decision.disposition is service.AdmissionDisposition.ADMIT)
+        if checker is not service.validate_admission:
+            decision = checker(evidence, facts)
+    except Exception:
+        raise CommandRejected('ADMISSION_CHECKER_REJECTED') from None
+    require(type(decision) is service.AdmissionDecision
+            and decision.disposition is service.AdmissionDisposition.ADMIT)
