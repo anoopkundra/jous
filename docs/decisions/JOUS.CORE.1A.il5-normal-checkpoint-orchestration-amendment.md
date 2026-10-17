@@ -102,6 +102,122 @@ Preserve inclusive authorization deadline `now_upper <= deadline`, strict contin
 
 Checkpoint UTC SHALL be derived after confirmed COMMIT from the retained ACK's fixed issued_at, checked against the envelope, NOT a new post-COMMIT sample. It SHALL NOT change on publication, query, restart, retransmission or reconciliation. Confirmed local completion plus the exact retained envelope SHALL yield one byte-identical candidate and SHA256. Random fields, fresh wall-clock substitution, process-local identifiers, environment encoding and provider serialization SHALL NOT affect it.
 
+### IL.5 Local Transaction Completion Temporal Specialization
+
+#### 1. Scope and events.
+
+This specialization governs local transaction timing for an already qualified normal IL.5 command.
+
+T1/m1 SHALL denote writer-owned actual admission and logical original-permit consumption.
+
+T2/m2 SHALL denote the final writer-owned continuation decision.
+
+T3 SHALL denote COMMIT dispatch.
+
+T4 SHALL denote confirmed successful COMMIT return.
+
+T5 SHALL denote later external original-permit completion.
+
+These events SHALL remain distinct.
+
+#### 2. T1 consumption.
+
+Before any new-transition mutation, T1 SHALL establish all required exact bindings, authority facts and qualified temporal predicates.
+
+Permit valid-from/expiry, authorization temporal windows and applicable approval temporal windows SHALL be consumption predicates at T1.
+
+Successful T1 SHALL authorize only this exact local transaction.
+
+It SHALL NOT perform a new external permit effect or authorize another transaction, retry or replacement operation.
+
+Later expiry of those consumption windows alone SHALL NOT invalidate that transaction.
+
+#### 3. Continuity and applicability.
+
+Protected exclusion, single-flight, fencing, exact binding continuity, known revocation/invalidation and unresolved-operation rules SHALL remain controlling.
+
+Applicable freshness, genuine lease/continuation predicates and independently applicable local-completion deadlines SHALL remain satisfied through T2.
+
+Applicability SHALL be independently established.
+
+Reservation expiry SHALL NOT become a universal gate or create new RELEASE, RECOVER or QUARANTINE restrictions.
+
+#### 4. Mandatory T2 placement.
+
+After all admitted transition mutations, retained-outcome construction, metadata/head/STATE updates and final register validation, the writer SHALL capture m2 and establish T2 compliance before COMMIT dispatch.
+
+m2 SHALL have qualified process/domain, measurement and propagation provenance within supported scope.
+
+Sample age, uncertainty, applicable bounds, current-fact continuity and exact operation coherence SHALL be validated.
+
+T2 SHALL NOT consume another permit.
+
+#### 5. Finalization path.
+
+After m2, only bounded pure validation needed to finish T2 and immediate COMMIT dispatch SHALL occur.
+
+Captured qualified local timing/model functions are permitted solely for that purpose.
+
+No transition mutation, additional durable read, mutable/arbitrary callback, dependency discovery, deliberate wait or external I/O SHALL intervene.
+
+Interruption, known invalidation or departure from this path SHALL cancel dispatch eligibility.
+
+#### 6. Temporal cutoff.
+
+Successful T2 SHALL authorize exactly one immediate COMMIT attempt for the same transaction.
+
+The temporal eligibility cutoff SHALL be T2.
+
+This SHALL NOT assert T3/T4 deadline coverage or a scheduler/SQLite duration bound.
+
+Inherent scheduling or SQLite delay alone SHALL NOT retroactively invalidate the transaction.
+
+No automatic COMMIT retry SHALL follow failure or uncertainty.
+
+#### 7. Failure before dispatch.
+
+Required T1/T2 compliance SHALL be established before COMMIT dispatch.
+
+Missing, invalid, contradictory or insufficient proof SHALL prohibit COMMIT and require bounded rollback/cleanup.
+
+Uncertain cleanup SHALL poison/fence under existing storage rules.
+
+Rollback or rejection SHALL NOT implicitly complete, cancel or otherwise close the original permit.
+
+#### 8. Storage uncertainty and later contradiction.
+
+A dispatched COMMIT whose outcome cannot be established SHALL remain STORAGE_UNKNOWN, with poisoning/fencing and existing reconciliation ownership.
+
+Confirmed COMMIT SHALL remain confirmed storage.
+
+If evidence established and relied upon at T1/T2 is subsequently shown invalid, contradictory, corrupted or unqualified as relied upon, normal progression SHALL be fenced, committed data and relevant original-operation/temporal evidence preserved, and resolution handed to IL.7.
+
+While unresolved, no normal publication, permit completion/disposition or operational ACK delivery SHALL be initiated.
+
+No compensating mutation or storage-outcome relabeling SHALL follow merely from that finding.
+
+Already-established external outcomes SHALL be preserved.
+
+This exceptional path SHALL NOT substitute for proof before dispatch.
+
+#### 9. Historical time.
+
+Historical fixed UTC, EVENTS, ACK and checkpoint fixing SHALL remain unchanged.
+
+Persisted last_valid_utc SHALL remain based on the validated T1 lower-bound projection.
+
+T2 SHALL supply continuation evidence only and SHALL NOT manufacture another command timestamp or require another local finalization transaction.
+
+#### 10. Unchanged boundaries.
+
+T5, publication and operational delivery SHALL remain separately governed.
+
+This specialization SHALL grant no new permit, publication, completion, recovery, fixture-operation or runtime authority.
+
+It SHALL NOT require changes to frozen Increment A, schema, operation kinds, journals, external retention/provider protocols, canonical representations, wire formats or vectors.
+
+Implementation SHALL remain separately authorized.
+
 ## 7. Closed ordinary approval applicability
 
 Independent transition approval applicability SHALL follow the controlling design section 9:
