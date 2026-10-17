@@ -375,12 +375,297 @@ class StoreTests(unittest.TestCase):
     def test_architecture_boundary(self):
         tree=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_store.py').read_text())
         imports={node.module for node in ast.walk(tree) if isinstance(node,ast.ImportFrom)}
-        self.assertEqual(imports,{'contextlib','dataclasses','enum','hashlib','pathlib','fixture_lease_contract'})
+        self.assertEqual(imports,{'contextlib','dataclasses','enum','hashlib','pathlib','fixture_lease_contract',None})
+        self.assertEqual([(n.level, tuple((a.name,a.asname) for a in n.names)) for n in ast.walk(tree)
+                          if isinstance(n,ast.ImportFrom) and n.module is None],
+                         [(1,(('fixture_lease_commands','commands'),))])
         self.assertEqual({alias.name for node in ast.walk(tree) if isinstance(node,ast.Import)
                           for alias in node.names},{'sqlite3'})
         for forbidden in ('dispatch','replay','acquire','advance','release','recover','initialize'):
             self.assertFalse(hasattr(self.store,forbidden))
         self.assertEqual(len(s.SPECS),6)
+
+
+class LifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix='jous-b-cleanup-')
+        self.path = Path(self.directory.name) / 'disposable.sqlite'
+        synthetic_database(self.path)
+        self.store = s.LeaseStore(self.path, 'synthetic-register')
+
+    def tearDown(self):
+        self.store.close()
+        self.directory.cleanup()
+
+    def test_begin_success_then_interruption_has_owned_cleanup(self):
+        for error in (KeyboardInterrupt, SystemExit, RuntimeError):
+            connection = self.store._connection
+            calls = []
+            class Interrupted:
+                def __getattr__(inner, name): return getattr(connection, name)
+                def execute(inner, sql, *args):
+                    calls.append(sql)
+                    cursor = connection.execute(sql, *args)
+                    if sql == 'BEGIN IMMEDIATE': raise error('after successful BEGIN')
+                    return cursor
+            self.store._connection = Interrupted()
+            try:
+                with self.assertRaises(error):
+                    with self.store.transaction(): self.fail('body entered')
+                self.assertFalse(connection.in_transaction)
+                self.assertEqual(calls.count('ROLLBACK'), 1)
+                self.assertIsNone(self.store._writer)
+                self.assertFalse(self.store._poisoned)
+            finally:
+                self.store._connection = connection
+
+    def test_writer_construction_failure_rolls_back_once(self):
+        with patch.object(s, 'TransactionWriter', side_effect=KeyboardInterrupt('construction')):
+            with self.assertRaises(KeyboardInterrupt):
+                with self.store.transaction(): self.fail('body')
+        self.assertFalse(self.store._connection.in_transaction)
+        self.assertIsNone(self.store._writer)
+
+    def test_writer_install_failure_rolls_back_once(self):
+        setter = s.LeaseStore.__setattr__
+        def install(owner, name, value):
+            if name == '_writer' and value is not None: raise SystemExit('installation')
+            setter(owner, name, value)
+        with patch.object(s.LeaseStore, '__setattr__', install):
+            with self.assertRaises(SystemExit):
+                with self.store.transaction(): self.fail('body')
+        self.assertFalse(self.store._connection.in_transaction)
+        self.assertIsNone(self.store._writer)
+
+    def test_rollback_return_without_inactive_state_is_unknown(self):
+        connection = self.store._connection
+        calls = []
+        class NoRollback:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                if sql == 'ROLLBACK': return None
+                return connection.execute(sql, *args)
+        self.store._connection = NoRollback()
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction(): raise ValueError('body')
+        self.assertTrue(self.store._poisoned)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertIsNone(self.store._writer)
+        connection.execute('ROLLBACK')
+
+    def test_state_observation_failure_poisoned(self):
+        connection = self.store._connection
+        class LostState:
+            def __getattr__(inner, name):
+                if name == 'in_transaction': raise RuntimeError('state unavailable')
+                return getattr(connection, name)
+        self.store._connection = LostState()
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction(): raise KeyboardInterrupt()
+        self.assertTrue(self.store._poisoned)
+        connection.execute('ROLLBACK')
+
+    def test_cursor_cleanup_uncertainty_still_attempts_rollback_once(self):
+        calls = []
+        class BrokenCursor:
+            def close(inner):
+                calls.append('close')
+                raise RuntimeError('cursor close uncertain')
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction() as writer:
+                writer._cursors.append(BrokenCursor())
+        self.assertEqual(calls, ['close'])
+        self.assertFalse(self.store._connection.in_transaction)
+        self.assertTrue(self.store._poisoned)
+        self.assertIsNone(self.store._writer)
+
+    def test_sealing_guards_insert_and_partial_generator_before_fetch(self):
+        with self.assertRaises(s.StorageRejected), self.store.transaction() as writer:
+            iterator = writer.iter_rows(s.MetadataRow)
+            next(iterator)
+            cursor = writer._cursors[0]
+            writer._close_cursors()
+            writer._sealed = True
+            with self.assertRaises(s.StorageRejected): writer.insert(None)
+            # A closed cursor would raise ProgrammingError if advanced first.
+            with self.assertRaises(s.StorageRejected): next(iterator)
+            with self.assertRaises(s.StorageRejected): writer.lookup(s.MetadataRow, 1)
+            self.assertEqual(writer._cursors, [])
+
+
+class FixedCursorTests(unittest.TestCase):
+    setUp = StoreTests.setUp
+    tearDown = StoreTests.tearDown
+    populate = StoreTests.populate
+
+    def intercept(self, prefix, *, zero=False, close_failure=False, malformed=False, fetch_failure=False):
+        connection = self.store._connection
+        calls, closes = [], []
+        class Cursor:
+            def __init__(inner, cursor): inner.cursor = cursor
+            def __getattr__(inner, name): return getattr(inner.cursor, name)
+            @property
+            def rowcount(inner): return 0 if zero else inner.cursor.rowcount
+            def fetchall(inner):
+                if fetch_failure: raise ValueError('injected fetch failure')
+                return inner.cursor.fetchall()
+            def fetchmany(inner, count):
+                rows = inner.cursor.fetchmany(count)
+                return rows * 2 if malformed else rows
+            def close(inner):
+                closes.append(prefix)
+                inner.cursor.close()
+                if close_failure: raise RuntimeError('injected cursor-close failure')
+        class Connection:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                cursor = connection.execute(sql, *args)
+                return Cursor(cursor) if sql.startswith(prefix) else cursor
+        self.store._connection = Connection()
+        return connection, calls, closes
+
+    def write_failure(self, kind, zero, close_failure):
+        self.populate()
+        prefix = {'reservation': 'UPDATE RESERVATIONS', 'claim': 'DELETE FROM BLOCKING_CLAIMS',
+                  'metadata': 'UPDATE REGISTER_METADATA'}[kind]
+        connection, calls, closes = self.intercept(prefix, zero=zero, close_failure=close_failure)
+        expected = s.StorageOutcomeUncertain if close_failure else s.StorageRejected
+        with self.assertRaises(expected):
+            with self.store.transaction() as writer:
+                # With both errors, preserve the primary primitive rejection
+                # until transaction cleanup observes sticky close uncertainty.
+                with self.assertRaises(s.StorageRejected if zero else RuntimeError):
+                    if kind == 'reservation':
+                        writer.replace_reservation(self.reservation, replace(self.reservation, revision=1))
+                    elif kind == 'claim': writer.delete_claim(self.claim)
+                    else: writer.complete_metadata(self.metadata, replace(self.metadata, last_valid_utc=2))
+                if close_failure: self.assertTrue(self.store._cursor_close_failed)
+        self.assertEqual(closes, [prefix])
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(self.store._poisoned, close_failure)
+
+    def test_lookup_success_closes_once(self):
+        connection, calls, closes = self.intercept('SELECT singleton,')
+        with self.store.transaction() as writer:
+            self.assertEqual(writer.lookup(s.MetadataRow, 1), self.metadata)
+            self.assertEqual(closes, ['SELECT singleton,'])
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertFalse(connection.in_transaction)
+
+    def test_lookup_semantic_rejection_and_close_failure_are_both_retained(self):
+        connection, calls, closes = self.intercept('SELECT singleton,', malformed=True, close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction() as writer:
+                with self.assertRaises(s.StorageRejected): writer.lookup(s.MetadataRow, 1)
+                self.assertTrue(self.store._cursor_close_failed)
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_fixed_query_close_failure_cannot_be_swallowed_into_clean_commit(self):
+        connection, calls, closes = self.intercept('SELECT 1', close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction():
+                with self.assertRaises(RuntimeError):
+                    s._query(self.store._connection, 'SELECT 1', cleanup=self.store)
+                self.assertTrue(self.store._cursor_close_failed)
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_fixed_query_fetch_rejection_still_closes(self):
+        connection, calls, closes = self.intercept('SELECT 1', fetch_failure=True)
+        with self.assertRaisesRegex(ValueError, 'injected fetch failure'):
+            with self.store.transaction():
+                s._query(self.store._connection, 'SELECT 1', cleanup=self.store)
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertFalse(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_profile_fixed_query_close_failure_is_sticky_before_writer_install(self):
+        connection, calls, closes = self.intercept('PRAGMA journal_mode', close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction(): self.fail('body entered')
+        self.assertEqual(len(closes), 1)
+        self.assertNotIn('BEGIN IMMEDIATE', calls)
+        self.assertNotIn('COMMIT', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_final_register_fixed_query_close_failure_blocks_commit(self):
+        connection, calls, closes = self.intercept('PRAGMA integrity_check', close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction(): pass
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_insert_close_failure_is_sticky(self):
+        connection, calls, closes = self.intercept('INSERT INTO APPROVED_ARTIFACTS', close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction() as writer: writer.insert(self.artifact)
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_begin_result_close_failure_rolls_back_once_and_poisoned(self):
+        connection, calls, closes = self.intercept('BEGIN IMMEDIATE', close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction(): self.fail('body entered')
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertNotIn('COMMIT', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_rollback_result_close_failure_has_no_second_attempt(self):
+        connection, calls, closes = self.intercept('ROLLBACK', close_failure=True)
+        with self.assertRaises(s.StorageOutcomeUncertain):
+            with self.store.transaction(): raise ValueError('primary body rejection')
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_confirmed_commit_close_failure_is_not_unknown_commit(self):
+        connection, calls, closes = self.intercept('COMMIT', close_failure=True)
+        with self.assertRaises(s.StorageRejected) as caught:
+            with self.store.transaction() as writer: pass
+        self.assertIs(type(caught.exception), s._ConfirmedCommitCleanup)
+        self.assertIs(caught.exception.storage_result, s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        self.assertIs(caught.exception.reason, s._CommitCleanupReason.CURSOR_CLOSE)
+        self.assertNotIsInstance(caught.exception, s.StorageOutcomeUncertain)
+        self.assertIs(writer.result, s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertNotIn('ROLLBACK', calls)
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+
+def fixed_write_case(kind, zero, close_failure):
+    def test(self): self.write_failure(kind, zero, close_failure)
+    suffix = 'zero_and_close_failure' if zero and close_failure else ('zero' if zero else 'close_failure')
+    setattr(FixedCursorTests, 'test_' + kind + '_' + suffix, test)
+
+
+for _kind in ('reservation', 'claim', 'metadata'):
+    for _zero, _close_failure in ((True, False), (False, True), (True, True)):
+        fixed_write_case(_kind, _zero, _close_failure)
 
 
 if __name__ == '__main__':

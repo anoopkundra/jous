@@ -30,9 +30,25 @@ class StorageOutcomeUncertain(StorageRejected):
     """Commit/rollback not proven. Handle suspended; no retry or success inference."""
 
 
+class _BeginBusy(StorageRejected):
+    """Confirmed clean BUSY/LOCKED entry rejection; never a retry permission."""
+
+
 class LocalStorageResult(StrEnum):
     LOCAL_STORAGE_COMMIT_CONFIRMED = 'LOCAL_STORAGE_COMMIT_CONFIRMED'
     LOCAL_STORAGE_ROLLBACK_CONFIRMED = 'LOCAL_STORAGE_ROLLBACK_CONFIRMED'
+
+
+class _CommitCleanupReason(StrEnum):
+    CURSOR_CLOSE = 'POST_COMMIT_CURSOR_CLOSE'
+
+
+class _ConfirmedCommitCleanup(StorageRejected):
+    """Confirmed storage plus failed cleanup; never an unknown COMMIT."""
+    def __init__(self):
+        self.storage_result = LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED
+        self.reason = _CommitCleanupReason.CURSOR_CLOSE
+        super().__init__(self.reason.value)
 
 
 class ExecutionState(StrEnum):
@@ -396,29 +412,56 @@ def _runtime():
     _require(sqlite3.sqlite_version_info >= (3, 45, 0) and sqlite3.threadsafety != 0)
 
 
-def _profile(connection):
+@contextmanager
+def _fixed_cursor(connection, sql, parameters=(), cleanup=None):
+    """Bounded cursor; retain primary rejection and sticky close uncertainty."""
+    cursor = connection.execute(sql, parameters)
+    primary = False
+    try:
+        yield cursor
+    except BaseException:
+        primary = True
+        raise
+    finally:
+        try:
+            cursor.close()
+        except BaseException:
+            if cleanup is not None:
+                cleanup._cursor_close_failed = True
+                cleanup._poisoned = True
+            if not primary or cleanup is None:
+                raise
+
+
+def _query(connection, sql, one=False, cleanup=None):
+    with _fixed_cursor(connection, sql, cleanup=cleanup) as cursor:
+        return cursor.fetchone() if one else cursor.fetchall()
+
+
+def _profile(connection, cleanup=None):
     # Inspect durable journal mode before connection-local PRAGMAs. Never repair it.
-    _require(connection.execute('PRAGMA journal_mode').fetchone() == ('delete',))
+    _require(_query(connection, 'PRAGMA journal_mode', True, cleanup) == ('delete',))
     for name, value in (('synchronous', 3), ('foreign_keys', 1), ('busy_timeout', 0),
                         ('locking_mode', 'normal'), ('read_uncommitted', 0)):
-        connection.execute(f'PRAGMA {name}={value}')
-        _require(connection.execute(f'PRAGMA {name}').fetchone() == (value,))
-    databases = connection.execute('PRAGMA database_list').fetchall()
+        with _fixed_cursor(connection, f'PRAGMA {name}={value}', cleanup=cleanup):
+            pass
+        _require(_query(connection, f'PRAGMA {name}', True, cleanup) == (value,))
+    databases = _query(connection, 'PRAGMA database_list', cleanup=cleanup)
     # integrity_check may instantiate SQLite's built-in temp schema. It is not
     # an ATTACH; no caller-created objects or third database are permitted.
     _require(databases[0][1] == 'main' and all(row[1] in ('main', 'temp') for row in databases))
-    _require(connection.execute('SELECT count(*) FROM sqlite_temp_schema').fetchone() == (0,))
+    _require(_query(connection, 'SELECT count(*) FROM sqlite_temp_schema', True, cleanup) == (0,))
 
 
-def _schema(connection):
+def _schema(connection, cleanup=None):
     expected = sorted((SPECS[cls][0], TABLE_SQL[cls]) for cls in SPECS)
-    actual = connection.execute(
-        "SELECT name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
+    actual = _query(connection,
+        "SELECT name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name", cleanup=cleanup)
     _require(actual == expected)
     # Also reject unexpected internal objects; SQLite-owned autoindexes are frozen
     # by exact CREATE TABLE constraints, not caller-generated index definitions.
-    internal = connection.execute(
-        "SELECT type,name,sql FROM sqlite_schema WHERE name LIKE 'sqlite_%'").fetchall()
+    internal = _query(connection,
+        "SELECT type,name,sql FROM sqlite_schema WHERE name LIKE 'sqlite_%'", cleanup=cleanup)
     expected_indexes = {('index', 'sqlite_autoindex_' + table + '_' + str(number), None)
                         for table, count in (('REGISTER_METADATA', 1), ('APPROVED_ARTIFACTS', 2),
                                              ('RESERVATIONS', 1), ('BLOCKING_CLAIMS', 1),
@@ -427,18 +470,18 @@ def _schema(connection):
     _require(set(internal) == expected_indexes)
 
 
-def _rows(connection, row_type):
+def _rows(connection, row_type, cleanup=None):
     table = SPECS[row_type][0]
     names = ','.join(field.name for field in fields(row_type))
-    return tuple(_decode(row_type, row) for row in connection.execute(
-        f'SELECT {names} FROM {table} ORDER BY {fields(row_type)[0].name}').fetchall())
+    return tuple(_decode(row_type, row) for row in _query(connection,
+        f'SELECT {names} FROM {table} ORDER BY {fields(row_type)[0].name}', cleanup=cleanup))
 
 
-def _validate_register(connection, register_id):
-    _schema(connection)
-    _require(connection.execute('PRAGMA integrity_check').fetchall() == [('ok',)])
-    _require(connection.execute('PRAGMA foreign_key_check').fetchall() == [])
-    data = {cls: _rows(connection, cls) for cls in SPECS}
+def _validate_register(connection, register_id, cleanup=None):
+    _schema(connection, cleanup)
+    _require(_query(connection, 'PRAGMA integrity_check', cleanup=cleanup) == [('ok',)])
+    _require(_query(connection, 'PRAGMA foreign_key_check', cleanup=cleanup) == [])
+    data = {cls: _rows(connection, cls, cleanup) for cls in SPECS}
     _require(len(data[MetadataRow]) == 1 and data[MetadataRow][0].register_id == register_id)
     metadata = data[MetadataRow][0]
     artifacts = {row.artifact_id: row for row in data[ArtifactRow]}
@@ -476,11 +519,42 @@ class TransactionWriter:
         self._store = store
         self._active = True
         self._failed = False
+        self._sealed = False
+        self._cursors = []
+        self._cursor_close_failed = False
         self.result = None
 
     def _check(self):
-        _require(self._active and not self._failed and self._store._writer is self
+        _require(self._active and not self._failed and not self._sealed and self._store._writer is self
                  and not self._store._poisoned)
+
+    def _close_cursors(self):
+        while self._cursors:
+            cursor = self._cursors.pop()
+            try:
+                cursor.close()
+            except BaseException:
+                self._cursor_close_failed = True
+                raise
+
+    def _stream(self, cursor):
+        self._cursors.append(cursor)
+        try:
+            while True:
+                # Guard BEFORE advancing SQLite, including resumed generators.
+                self._check()
+                values = cursor.fetchone()
+                if values is None:
+                    return
+                yield values
+        finally:
+            if any(item is cursor for item in self._cursors):
+                self._cursors.remove(cursor)
+                try:
+                    cursor.close()
+                except BaseException:
+                    self._cursor_close_failed = True
+                    raise
 
     def _reject(self, error):
         self._failed = True
@@ -500,10 +574,11 @@ class TransactionWriter:
             names = ','.join(field.name for field in fields(row_type))
             table = SPECS[row_type][0]
             primary = fields(row_type)[0].name
-            rows = self._store._connection.execute(
-                f'SELECT {names} FROM {table} WHERE {primary}=?', (key,)).fetchmany(2)
-            _require(len(rows) <= 1)
-            return None if not rows else _decode(row_type, rows[0])
+            with _fixed_cursor(self._store._connection,
+                    f'SELECT {names} FROM {table} WHERE {primary}=?', (key,), self._store) as cursor:
+                rows = cursor.fetchmany(2)
+                _require(len(rows) <= 1)
+                return None if not rows else _decode(row_type, rows[0])
         except BaseException as error:
             self._reject(error)
 
@@ -517,12 +592,8 @@ class TransactionWriter:
             order = primary if row_type in (MetadataRow, EventRow, ClaimRow) else f'CAST({primary} AS BLOB)'
             cursor = self._store._connection.execute(
                 f'SELECT {names} FROM {SPECS[row_type][0]} ORDER BY {order}')
-            try:
-                for values in cursor:
-                    self._check()
-                    yield _decode(row_type, values)
-            finally:
-                cursor.close()
+            for values in self._stream(cursor):
+                yield _decode(row_type, values)
         except BaseException as error:
             self._reject(error)
 
@@ -536,12 +607,8 @@ class TransactionWriter:
             cursor = self._store._connection.execute(
                 f'SELECT {names} FROM EVENTS WHERE event_sequence BETWEEN ? AND ? ORDER BY event_sequence',
                 (first_sequence, final_sequence))
-            try:
-                for values in cursor:
-                    self._check()
-                    yield _decode(EventRow, values)
-            finally:
-                cursor.close()
+            for values in self._stream(cursor):
+                yield _decode(EventRow, values)
         except BaseException as error:
             self._reject(error)
 
@@ -553,12 +620,8 @@ class TransactionWriter:
             cursor = self._store._connection.execute(
                 f'SELECT {names} FROM BLOCKING_CLAIMS WHERE reservation_id=? ORDER BY canonical_key',
                 (reservation_id,))
-            try:
-                for values in cursor:
-                    self._check()
-                    yield _decode(ClaimRow, values)
-            finally:
-                cursor.close()
+            for values in self._stream(cursor):
+                yield _decode(ClaimRow, values)
         except BaseException as error:
             self._reject(error)
 
@@ -571,13 +634,13 @@ class TransactionWriter:
             _validate_row(replacement)
             _require(expected.reservation_id == replacement.reservation_id
                      and expected.revision < MAX_INTEGER and replacement.revision == expected.revision + 1)
-            _require(self.lookup(ReservationRow, expected.reservation_id) == expected)
             names = tuple(field.name for field in fields(ReservationRow))
             assignment = ','.join(name + '=?' for name in names)
-            cursor = self._store._connection.execute(
-                f'UPDATE RESERVATIONS SET {assignment} WHERE reservation_id=? AND revision=?',
-                _values(replacement) + (expected.reservation_id, expected.revision))
-            _require(cursor.rowcount == 1)
+            match = ' AND '.join(name + ' IS ?' for name in names)
+            with _fixed_cursor(self._store._connection,
+                f'UPDATE RESERVATIONS SET {assignment} WHERE {match}',
+                _values(replacement) + _values(expected), self._store) as cursor:
+                _require(cursor.rowcount == 1)
         except BaseException as error:
             self._reject(error)
 
@@ -587,11 +650,10 @@ class TransactionWriter:
         try:
             _require(type(expected) is ClaimRow)
             _validate_row(expected)
-            _require(self.lookup(ClaimRow, expected.canonical_key) == expected)
-            cursor = self._store._connection.execute(
+            with _fixed_cursor(self._store._connection,
                 'DELETE FROM BLOCKING_CLAIMS WHERE canonical_key=? AND reservation_id=? '
-                'AND introduced_revision=? AND originating_artifact_id=?', _values(expected))
-            _require(cursor.rowcount == 1)
+                'AND introduced_revision=? AND originating_artifact_id=?', _values(expected), self._store) as cursor:
+                _require(cursor.rowcount == 1)
         except BaseException as error:
             self._reject(error)
 
@@ -605,27 +667,27 @@ class TransactionWriter:
             allowed = {'last_event_sequence', 'last_event_digest', 'state_digest', 'last_valid_utc'}
             _require(all(getattr(expected, field.name) == getattr(replacement, field.name)
                          for field in fields(MetadataRow) if field.name not in allowed))
-            _require(self.lookup(MetadataRow, 1) == expected)
-            cursor = self._store._connection.execute(
+            match = ' AND '.join(field.name + ' IS ?' for field in fields(MetadataRow))
+            with _fixed_cursor(self._store._connection,
                 'UPDATE REGISTER_METADATA SET last_event_sequence=?,last_event_digest=?,state_digest=?,last_valid_utc=? '
-                'WHERE singleton=1 AND last_event_sequence=? AND last_event_digest=? AND state_digest=? AND last_valid_utc=?',
+                f'WHERE {match}',
                 (replacement.last_event_sequence, replacement.last_event_digest, replacement.state_digest,
-                 replacement.last_valid_utc, expected.last_event_sequence, expected.last_event_digest,
-                 expected.state_digest, expected.last_valid_utc))
-            _require(cursor.rowcount == 1)
+                 replacement.last_valid_utc) + _values(expected), self._store) as cursor:
+                _require(cursor.rowcount == 1)
         except BaseException as error:
             self._reject(error)
 
     def insert(self, row):
-        if not self._active or self._failed or self._store._writer is not self or self._store._poisoned:
-            raise StorageRejected('WRITER_INACTIVE')
+        self._check()
         try:
             _validate_row(row)
             table = SPECS[type(row)][0]
             names = ','.join(field.name for field in fields(row))
             values = _values(row)
             placeholders = ','.join('?' for _ in values)
-            self._store._connection.execute(f'INSERT INTO {table} ({names}) VALUES ({placeholders})', values)
+            with _fixed_cursor(self._store._connection,
+                    f'INSERT INTO {table} ({names}) VALUES ({placeholders})', values, self._store):
+                pass
         except BaseException as error:
             if isinstance(error, sqlite3.Error) and getattr(error, 'sqlite_errorcode', 0) & 255 in (
                     sqlite3.SQLITE_FULL, sqlite3.SQLITE_IOERR, sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
@@ -653,15 +715,18 @@ class LeaseStore:
         self._connection = None
         self._writer = None
         self._poisoned = False
+        self._cursor_close_failed = False
         self._register_id = register_id
         try:
             self._connection = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True,
                                                isolation_level=None, timeout=0)
             self._connection.enable_load_extension(False)
-            _profile(self._connection)
-            self._connection.execute('BEGIN')
-            _validate_register(self._connection, register_id)
-            self._connection.execute('ROLLBACK')
+            _profile(self._connection, self)
+            with _fixed_cursor(self._connection, 'BEGIN', cleanup=self):
+                pass
+            _validate_register(self._connection, register_id, self)
+            with _fixed_cursor(self._connection, 'ROLLBACK', cleanup=self):
+                pass
         except (sqlite3.Error, StorageRejected, KeyError):
             if self._connection is not None:
                 self._connection.close()
@@ -672,10 +737,12 @@ class LeaseStore:
         _require(not self._poisoned and self._connection is not None and self._writer is None)
         _require(row_type in SPECS)
         try:
-            self._connection.execute('BEGIN')
-            _validate_register(self._connection, self._register_id)
-            result = _rows(self._connection, row_type)
-            self._connection.execute('ROLLBACK')
+            with _fixed_cursor(self._connection, 'BEGIN', cleanup=self):
+                pass
+            _validate_register(self._connection, self._register_id, self)
+            result = _rows(self._connection, row_type, self)
+            with _fixed_cursor(self._connection, 'ROLLBACK', cleanup=self):
+                pass
             return result
         except (sqlite3.Error, StorageRejected, KeyError):
             self._poisoned = True
@@ -683,46 +750,97 @@ class LeaseStore:
 
     @contextmanager
     def transaction(self):
+        with self._transaction() as writer:
+            yield writer
+
+    def _qualified_transaction(self, payload):
+        # Fixed internal finalizer, resolved/captured BEFORE BEGIN. No caller
+        # callback, closure over a writer, or public COMMIT token is accepted.
+        from . import fixture_lease_commands as commands
+        _require(type(payload) is commands._Finalization)
+        return self._transaction(commands._finalize_qualified, payload)
+
+    @contextmanager
+    def _transaction(self, finalizer=None, payload=None):
         _require(not self._poisoned and self._connection is not None and self._writer is None)
+        writer = None
+        began = False
+        committing = False
+        self._cursor_close_failed = False
+        # Cleanup owns the lifecycle before profile/BEGIN, not just the body.
         try:
-            _profile(self._connection)
-            self._connection.execute('BEGIN IMMEDIATE')
-        except sqlite3.Error as error:
-            if getattr(error, 'sqlite_errorcode', 0) & 255 not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                self._poisoned = True
-            raise StorageRejected('BEGIN_REJECTED') from None
-        except StorageRejected:
-            self._poisoned = True
-            raise
-        writer = TransactionWriter(self)
-        self._writer = writer
-        try:
+            _profile(self._connection, self)
+            with _fixed_cursor(self._connection, 'BEGIN IMMEDIATE', cleanup=self):
+                pass
+            began = True
+            writer = TransactionWriter(self)
+            self._writer = writer
             yield writer
             _require(not writer._failed)
-            _validate_register(self._connection, self._register_id)
-        except BaseException:
+            writer._close_cursors()
+            _validate_register(self._connection, self._register_id, self)
+            _require(not self._cursor_close_failed)
+            writer._sealed = True
+            if finalizer is not None:
+                finalizer(payload)
+            _require(not self._poisoned and not writer._failed)
+            # No durable read/validation occurs between finalizer and dispatch.
             try:
-                self._connection.execute('ROLLBACK')
-                writer.result = LocalStorageResult.LOCAL_STORAGE_ROLLBACK_CONFIRMED
+                committing = True
+                with _fixed_cursor(self._connection, 'COMMIT', cleanup=self):
+                    writer.result = LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED
             except BaseException:
                 self._poisoned = True
-                raise StorageOutcomeUncertain('ROLLBACK_UNKNOWN') from None
-            raise
-        else:
-            try:
-                self._connection.execute('COMMIT')
-                writer.result = LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED
-            except BaseException:
-                self._poisoned = True
+                if writer.result is LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED:
+                    # Dispatch returned successfully; cursor cleanup cannot turn
+                    # confirmed storage into an unknown COMMIT outcome.
+                    raise _ConfirmedCommitCleanup() from None
                 # Best-effort bounded cleanup, NEVER claim rollback of unknown commit.
                 try:
                     if self._connection.in_transaction:
-                        self._connection.execute('ROLLBACK')
+                        with _fixed_cursor(self._connection, 'ROLLBACK', cleanup=self):
+                            pass
                 except BaseException:
                     pass
                 raise StorageOutcomeUncertain('COMMIT_UNKNOWN') from None
+        except BaseException as error:
+            if committing:
+                raise
+            try:
+                cursor_cleanup_failed = False
+                if writer is not None:
+                    try:
+                        writer._close_cursors()
+                    except BaseException:
+                        cursor_cleanup_failed = True
+                active = self._connection.in_transaction
+                _require(type(active) is bool)
+                if active:
+                    with _fixed_cursor(self._connection, 'ROLLBACK', cleanup=self):
+                        pass
+                    _require(self._connection.in_transaction is False)
+                    if writer is not None:
+                        writer.result = LocalStorageResult.LOCAL_STORAGE_ROLLBACK_CONFIRMED
+                elif began:
+                    # A disappearing transaction is not a confirmed rollback.
+                    raise StorageOutcomeUncertain('CLEANUP_UNKNOWN')
+                _require(not self._cursor_close_failed)
+                if writer is not None:
+                    _require(not cursor_cleanup_failed and not writer._cursor_close_failed)
+            except BaseException:
+                self._poisoned = True
+                raise StorageOutcomeUncertain('ROLLBACK_UNKNOWN') from None
+            if not began and isinstance(error, sqlite3.Error):
+                if getattr(error, 'sqlite_errorcode', 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise _BeginBusy('BEGIN_REJECTED') from None
+                self._poisoned = True
+                raise StorageRejected('BEGIN_REJECTED') from None
+            if not began and isinstance(error, StorageRejected):
+                self._poisoned = True
+            raise
         finally:
-            writer._active = False
+            if writer is not None:
+                writer._active = False
             self._writer = None
 
     def close(self):

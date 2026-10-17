@@ -34,9 +34,11 @@ def command_import_boundary(tree):
     expected={
         (0,'dataclasses',( ('dataclass',None),('fields',None),('replace',None) )),
         (0,'hashlib',( ('sha256',None), )),
+        (0,'types',( ('FunctionType',None),('MethodType',None) )),
         (1,None,( ('fixture_lease_protocol','p'), )),
         (1,None,( ('fixture_lease_store','s'), )),
         (1,None,( ('fixture_lease_service','service'), )),
+        (1,None,( ('fixture_lease_admission_qualification','qualification_values'), )),
     }
     observed=[]
     for node in ast.walk(tree):
@@ -626,7 +628,10 @@ class CommandsTests(unittest.TestCase):
         self.assertEqual(len(s.SPECS),6)
         store_ast=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_store.py').read_text())
         imports={node.module for node in ast.walk(store_ast) if isinstance(node,ast.ImportFrom)}
-        self.assertEqual(imports,{'contextlib','dataclasses','enum','hashlib','pathlib','fixture_lease_contract'})
+        self.assertEqual(imports,{'contextlib','dataclasses','enum','hashlib','pathlib','fixture_lease_contract',None})
+        self.assertEqual([(n.level, tuple((a.name,a.asname) for a in n.names)) for n in ast.walk(store_ast)
+                          if isinstance(n,ast.ImportFrom) and n.module is None],
+                         [(1,(('fixture_lease_commands','commands'),))])
         commands_ast=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text())
         self.assertTrue(command_import_boundary(commands_ast))
 
@@ -1034,6 +1039,689 @@ class CommandsTests(unittest.TestCase):
         missing=ast.parse((ROOT/'services/api/infrastructure/fixture_lease_commands.py').read_text(encoding='utf-8')
                          .replace('from . import fixture_lease_service as service',''))
         self.assertFalse(command_import_boundary(missing))
+
+
+class QualifiedWriterTests(unittest.TestCase):
+    artifact = CommandsTests.artifact
+    ref = CommandsTests.ref
+    acquire = CommandsTests.acquire
+    execute = CommandsTests.execute
+    raw = CommandsTests.raw
+    tearDown = CommandsTests.tearDown
+
+    def setUp(self):
+        CommandsTests.setUp(self)
+        self.execute()  # Real synthetic retained predecessor; not genesis fallback.
+        self.command, self.material = self.acquire('b-command', 'b-reservation', 'b-set')
+        self.material = replace(self.material, utc_time=10, last_valid_utc=999)
+        self.q = core.qualification_values
+        self.v = core.service
+        if not hasattr(type(self), 'template'):
+            type(self).template = self.make_qualification()
+        self.qualified = self.q._copy(type(self).template)
+        self.points = [1000, 4000]
+        self.calls = []
+        self.error_value = 0
+        self.measure_hook = None
+        self.qualifier_hook = None
+        self.proof_transform = None
+        self.impl = self.v.EvidenceReference('approved-local-implementation', b'i'*32)
+        self.measurement = self.v.EvidenceReference('approved-local-measurement', b'm'*32)
+        self.proof = self.v.EvidenceReference('independent-local-qualification', b'q'*32)
+        self.applicability = self.v.TimingApplicability.NOT_APPLICABLE
+        self.deadline = None
+        self.adapter = core.LocalTimingAdapter(self.qualified.inputs.support, self.impl, self.measurement,
+                                               self.qualify_local, self.measure, self.error)
+
+    def make_qualification(self):
+        q, v = self.q, self.v
+        g, a, r = q.g, q.a, q.r
+        pr, cp = g.pr, g.pr.checkpoints
+        proof = v.EvidenceReference('synthetic-independent-proof', b'z'*32)
+        metadata = self.store.read_rows(s.MetadataRow)[0]
+        ref = cp.NormalReference('seed', b'c'*32, 'seed-permit', b'p'*32, 'host', p.STATE_2,
+                                  proof.identity, proof.sha256, 'seed-envelope', b'e'*32)
+        raw = cp.checkpoint_bytes(cp.NormalCheckpoint('g', 1, 'x', 1, metadata.last_event_sequence,
+            metadata.last_event_digest, metadata.state_digest, 0, b'0'*32, ref, 'approval'))
+        pointer = v.EvidenceReference('protected-predecessor', sha256(raw).digest())
+        activation = v.ActivationIdentity('g', 1, 'x', 'host', pointer)
+        predecessor = v.ResolvedCheckpointEvidence(pointer, raw, activation, 1, metadata.last_event_sequence,
+            metadata.last_event_digest, metadata.state_digest, p.STATE_2, proof)
+        binding = pr.CurrentBinding(activation, 'host', proof, p.STATE_2, proof,
+            pr.PredecessorProfile.NORMAL_COMMAND, 1, metadata.last_event_sequence,
+            metadata.last_event_digest, metadata.state_digest)
+        current = pr.QualifiedCurrentContext(binding, pr.ContextQualification(binding, v.EvidenceValidity.VALID,
+            proof, pr.CurrentStatus.CURRENT, pr.HostStatus.APPROVED, pr.FencingStatus.CLEAR))
+        resolved = pr.resolve_predecessor(current, pr.TrustedPredecessorAdapter(
+            lambda value: v.EvidenceValidity.VALID,
+            lambda value: pr.ResolutionObservation(predecessor,
+                pr.ResolutionQualification(current, predecessor, v.EvidenceValidity.VALID, proof)),
+            lambda *values: v.EvidenceValidity.VALID))
+        command = self.command
+        context = v.CommandContext(command.command_id, p.command_digest(command), command.command_kind,
+            command.operation, command.phase, command.expected_revision,
+            v.EvidenceReference(command.authorization_reference.artifact_id, command.authorization_reference.artifact_sha256))
+        auth = g.AuthorizationEvidence(context, 'owner', activation, context.authorization,
+            v.EvidenceValidity.VALID, 0, v.InclusiveDeadline(12))
+        approval = v.EvidenceReference('approval', command.approval_record_hash)
+        approved = g.ApprovalEvidence(v.ApprovalApplicability.REQUIRED,
+            v.VerifiedApproval('independent', 'owner', context,
+                c.ArtifactBytes(self.binding.artifact_type, self.binding.exact_bytes), approval),
+            approval, v.EvidenceValidity.VALID, 0, v.InclusiveDeadline(12))
+        if command.command_kind in (c.Command.RECORD_EXECUTION, c.Command.QUARANTINE):
+            approved = g.ApprovalEvidence(v.ApprovalApplicability.NOT_APPLICABLE, None, None,
+                                          v.EvidenceValidity.VALID, None, None)
+        point = v.MonotonicPoint('process', 'domain', 0)
+        sample = v.QualifiedSample(proof, 'synthetic-source', proof, proof, v.UtcInterval(10, 10), point)
+        profile = v.QualifiedClockProfile(proof, 'synthetic-source', proof, 100000, 100, 10, 0)
+        propagation = v.QualifiedPropagationError(proof, proof, 0, 0, proof)
+        time = g.TimeEvidence(sample, profile, point, propagation, v.TimingApplicability.REQUIRED,
+            v.StrictDeadline(40), v.TimingApplicability.NOT_APPLICABLE, None)
+        history = g.HistoryEvidence(context, activation, proof, g.CommandHistory.NEW,
+            g.GapKnowledge.CLEAR, g.GapKnowledge.CLEAR, g.GapKnowledge.CLEAR,
+            pr.CurrentStatus.CURRENT, pr.HostStatus.APPROVED, pr.FencingStatus.CLEAR)
+        bundle = g.PrerequisiteBundle(p.command_bytes(command), command, context,
+            v.AuthenticatedRequester('owner', proof), auth, resolved, activation, 'host', approved, time, history)
+        gate = g.evaluate_prerequisites(bundle, g.TrustedPrerequisiteVerifier(
+            lambda value: g.QualificationEvidence(value, v.EvidenceValidity.VALID, proof)))
+        request = a.AcquisitionInput(bundle, gate)
+        permit_bytes = b'synthetic exact original permit'
+        permit = v.CommandPermit(context, activation, 0, 13,
+                                  v.EvidenceReference('original-permit', sha256(permit_bytes).digest()))
+        acquired = a.acquire_original_permit(request, a.TrustedAcquisitionAdapter(
+            lambda value: g.QualificationEvidence(value.bundle, v.EvidenceValidity.VALID, proof),
+            lambda *args: permit,
+            lambda attempt, value: a.PermitQualification(attempt, value, permit_bytes, time,
+                                                          v.EvidenceValidity.VALID, proof)))
+        prepared = r.e.prepare_admission_envelope(acquired)
+        envelope_ref = v.EvidenceReference('retained-envelope', b'r'*32)
+        def receipt(material):
+            return r.RetentionReceipt(material, envelope_ref,
+                r.OriginalRecordIndex(context, 'owner', activation, permit.evidence, envelope_ref))
+        retained = r.retain_original_envelope(prepared, r.TrustedRetentionAdapter(proof,
+            lambda value: r.RetentionAuthorization(value, permit.evidence, proof, v.EvidenceValidity.VALID, proof),
+            receipt,
+            lambda value, observed: r.RetentionConfirmation(observed, proof, *([v.EvidenceValidity.VALID]*3), proof)))
+        support = q.ModelSupport(proof, proof, proof, proof, sample.source, 100000, q.ErrorConventions.DESIGN7_NS_OUTWARD)
+        observed = replace(time, point=replace(point, ticks_ns=500),
+                           propagation=replace(propagation, elapsed_ns=500))
+        def qualify(value):
+            return q.CurrentQualification(value, proof, proof, *([v.EvidenceValidity.VALID]*9),
+                auth, approved, observed, q.PropagationModelBinding(support, sample.sample,
+                    'process', 'domain', 500, 90000, v.EvidenceValidity.VALID, proof))
+        result = q.qualify_admission_inputs(retained, q.TrustedQualificationAdapter(proof, (support,), qualify))
+        self.assertIs(result.state, q.QualificationState.QUALIFIED)
+        return result
+
+    def qualify_local(self, inputs, implementation, measurement, measure, error):
+        self.calls.append('qualify')
+        self.assertIsNone(self.store._writer)
+        if self.qualifier_hook: self.qualifier_hook()
+        response = core.LocalTimingQualification(inputs, implementation, measurement, 'process', 'domain',
+            self.v.EvidenceValidity.VALID, self.proof, self.applicability, self.deadline)
+        return response if self.proof_transform is None else self.proof_transform(response)
+
+    def measure(self):
+        self.calls.append('m')
+        self.assertIsNotNone(self.store._writer)
+        if self.measure_hook: self.measure_hook()
+        return self.v.MonotonicPoint('process', 'domain', self.points.pop(0))
+
+    def error(self, elapsed):
+        self.calls.append(('E', elapsed))
+        return self.error_value
+
+    def run_b(self):
+        return core.complete_qualified(self.store, self.command, self.context, self.material,
+                                       qualification=self.qualified, timing=self.adapter)
+
+    def rewrite_qualification(self, row_type, field, value):
+        def rewrite(projection):
+            kind, data = projection
+            if type(data) is tuple and data and type(data[0]) is tuple and type(data[0][0]) is str:
+                data = tuple((name, (type(value), value) if kind is row_type and name == field
+                              else rewrite(child)) for name, child in data)
+            return kind, data
+        # Synthetic qualified fixture construction, not a production authority API.
+        self.qualified = self.q.a._copy_projection(rewrite(self.q._project(self.qualified)))
+
+    def test_valid_consumption_windows_expire_before_t2(self):
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertEqual(result.t1.evaluation.interval.lower_us, 11)
+        self.assertEqual(result.t2.evaluation.interval.lower_us, 14)
+        self.assertFalse(result.reconciliation_required)
+        self.assertEqual(self.calls, ['qualify', 'm', ('E', 1000), 'm', ('E', 4000)])
+        self.assertEqual(self.store.read_rows(s.MetadataRow)[0].last_valid_utc, 11)
+        self.assertEqual(p.decode_record(result.local.retained_ack_bytes, p.AckPayload).issued_at, 10)
+        self.assertEqual(self.material.last_valid_utc, 999)
+        with self.assertRaises(TypeError): bool(result)
+        for name in ('publish', 'complete', 'ack_delivery_permitted', 'retry_permitted', 'begin_permitted'):
+            self.assertFalse(hasattr(result, name))
+
+    def test_t1_reads_then_mutation_and_t2_sealed_no_reads(self):
+        trace = []
+        lookup, insert = s.TransactionWriter.lookup, s.TransactionWriter.insert
+        validate = s._validate_register
+        def read(writer, *args):
+            trace.append('read'); return lookup(writer, *args)
+        def write(writer, *args):
+            self.assertIn('m1', trace); trace.append('write'); return insert(writer, *args)
+        def audit(*args):
+            trace.append('audit'); return validate(*args)
+        def measured():
+            if len(self.points) == 2:
+                trace.append('m1')
+            else:
+                self.assertTrue(self.store._writer._sealed)
+                self.assertEqual(self.store._writer._cursors, [])
+                trace.append('m2')
+        self.measure_hook = measured
+        with patch.object(s.TransactionWriter, 'lookup', read), patch.object(s.TransactionWriter, 'insert', write), patch.object(s, '_validate_register', audit):
+            result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertEqual(trace[-2:], ['audit', 'm2'])
+        self.assertNotIn('read', trace[trace.index('m1')+1:trace.index('write')])
+
+    def test_captured_dependency_replacement_cannot_escape(self):
+        def replacement():
+            object.__setattr__(self.adapter, 'measure', lambda: self.fail('replacement measure'))
+            object.__setattr__(self.adapter, 'evaluate_error_ns', lambda n: self.fail('replacement E'))
+            object.__setattr__(self.adapter, 'qualify', lambda *a: self.fail('late qualification'))
+        self.qualifier_hook = replacement
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.SUCCESS)
+
+    def test_t2_completion_unknown_rejects_before_begin(self):
+        self.applicability = self.v.TimingApplicability.UNKNOWN
+        with self.assertRaises(core.CommandRejected): self.run_b()
+        self.assertEqual(self.calls, ['qualify'])
+
+    def test_required_strict_completion_deadline_blocks_commit(self):
+        self.applicability = self.v.TimingApplicability.REQUIRED
+        self.deadline = self.v.StrictDeadline(14)
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.CLOCK_REJECTED)
+        self.assertTrue(result.reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+        self.assertFalse(self.store._connection.in_transaction)
+
+    def test_inclusive_completion_equality_and_no_reservation_expiry_gate(self):
+        self.applicability = self.v.TimingApplicability.REQUIRED
+        self.deadline = self.v.InclusiveDeadline(14)
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.SUCCESS)
+
+    def test_t2_freshness_failure_zero_commit(self):
+        self.points = [1000, 40000]
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.CLOCK_REJECTED)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_later_contradiction_preserves_confirmed_storage(self):
+        result = self.run_b()
+        before = self.raw('SELECT canonical_payload_hash FROM COMMANDS ORDER BY command_id')
+        blocked = core._later_contradiction(self.store, result, self.proof)
+        self.assertIs(blocked.local, result.local)
+        self.assertEqual(blocked.local.storage_result, s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        self.assertTrue(blocked.reconciliation_required)
+        self.assertTrue(self.store._poisoned)
+        self.assertEqual(before, self.raw('SELECT canonical_payload_hash FROM COMMANDS ORDER BY command_id'))
+
+    def test_replay_mismatch_no_new_measurement(self):
+        first = self.run_b()
+        self.calls.clear()
+        self.points = []
+        replay = self.run_b()
+        self.assertIs(type(replay), core.LocalCommandResult)
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.retained_ack_bytes, first.local.retained_ack_bytes)
+        self.assertEqual(self.calls, ['qualify'])
+        self.calls.clear()
+        self.command = replace(self.command, authenticated_principal='changed')
+        mismatch = self.run_b()
+        self.assertEqual(mismatch.outcome, p.OutcomeCode.REPLAY_MISMATCH)
+        self.assertEqual(self.calls, ['qualify'])
+
+    def test_programming_defect_preserved_after_cleanup(self):
+        def broken(n): raise AssertionError('implementation defect')
+        self.adapter = replace(self.adapter, evaluate_error_ns=broken)
+        with self.assertRaisesRegex(AssertionError, 'implementation defect'): self.run_b()
+        self.assertFalse(self.store._connection.in_transaction)
+        self.assertTrue(self.store._poisoned)
+
+    def test_caller_mutation_during_measurement_rejects_without_mutation(self):
+        self.measure_hook = lambda: object.__setattr__(self.material.reservation, 'owner', 'changed')
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.AUTHORITY_REJECTED)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_commit_uncertainty_preserves_unknown(self):
+        connection = self.store._connection
+        calls = []
+        class LostCommit:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                cursor = connection.execute(sql, *args)
+                if sql == 'COMMIT': raise sqlite3.OperationalError('lost response')
+                return cursor
+        self.store._connection = LostCommit()
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.STORAGE_UNKNOWN)
+        self.assertIsNone(result.local.storage_result)
+        self.assertTrue(result.reconciliation_required)
+        self.assertIsNot(result.reason, s._CommitCleanupReason.CURSOR_CLOSE)
+        self.assertIsNone(result.local.retained_ack_bytes)
+        self.assertTrue(self.store._poisoned)
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertNotIn('ROLLBACK', calls)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(2,)])
+
+    def commit_close_failure(self):
+        connection, calls, closes = self.store._connection, [], []
+        class CommitCursor:
+            def __init__(inner, cursor): inner.cursor = cursor
+            def close(inner):
+                closes.append('COMMIT')
+                inner.cursor.close()
+                raise RuntimeError('COMMIT cursor close failed after confirmed execute')
+        class Connection:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                cursor = connection.execute(sql, *args)
+                return CommitCursor(cursor) if sql == 'COMMIT' else cursor
+        self.store._connection = Connection()
+        return connection, calls, closes
+
+    def test_confirmed_commit_close_failure_survives_b_boundary(self):
+        connection, calls, closes = self.commit_close_failure()
+        result = self.run_b()
+        self.assertIs(type(result.local), core.LocalCommandResult)
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertIs(result.local.storage_result, s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        self.assertTrue(result.reconciliation_required)
+        self.assertIs(result.reason, s._CommitCleanupReason.CURSOR_CLOSE)
+        self.assertEqual(result.reason.value, 'POST_COMMIT_CURSOR_CLOSE')
+        self.assertIsNotNone(result.t1)
+        self.assertIsNotNone(result.t2)
+        self.assertIsNotNone(result.completed)
+        self.assertEqual(result.local.retained_ack_bytes, result.completed.ack_bytes)
+        self.assertEqual(self.raw('SELECT durable_ack_bytes FROM COMMANDS WHERE command_id=?',
+                                  (self.command.command_id,)), [(result.local.retained_ack_bytes,)])
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertNotIn('ROLLBACK', calls)
+        self.assertEqual(closes, ['COMMIT'])
+        with self.assertRaises(TypeError): bool(result)
+        for name in ('publish', 'publication_permitted', 'permit_completion_permitted',
+                     'ack_delivery_permitted', 'recovery_execution_permitted', 'retry_permitted'):
+            self.assertFalse(hasattr(result, name))
+
+    def test_replay_commit_cleanup_preserves_historical_result_without_measurement(self):
+        first = self.run_b()
+        self.calls.clear()
+        self.points = []
+        connection, calls, closes = self.commit_close_failure()
+        result = self.run_b()
+        self.assertTrue(result.local.replayed)
+        self.assertEqual(result.local.retained_ack_bytes, first.local.retained_ack_bytes)
+        self.assertIs(result.local.storage_result, s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        self.assertTrue(result.reconciliation_required)
+        self.assertIsNone(result.t1)
+        self.assertIsNone(result.t2)
+        self.assertEqual(self.calls, ['qualify'])
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertNotIn('ROLLBACK', calls)
+        self.assertEqual(closes, ['COMMIT'])
+        self.assertFalse(connection.in_transaction)
+
+    def test_non_b_commit_cleanup_retains_storage_rejected_contract(self):
+        first = self.run_b()
+        connection, calls, closes = self.commit_close_failure()
+        with self.assertRaises(s.StorageRejected) as caught:
+            core.complete_admitted(self.store, self.command, self.context)
+        self.assertIs(type(caught.exception), s._ConfirmedCommitCleanup)
+        self.assertIs(caught.exception.storage_result, s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertNotIn('ROLLBACK', calls)
+        self.assertEqual(closes, ['COMMIT'])
+        self.assertTrue(self.store._poisoned)
+        self.assertFalse(connection.in_transaction)
+
+    def test_zero_durable_access_after_m2_and_one_commit(self):
+        connection = self.store._connection
+        after_m2, calls = [], []
+        class Trap:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                if after_m2: self.assertEqual(sql, 'COMMIT')
+                return connection.execute(sql, *args)
+        self.store._connection = Trap()
+        self.measure_hook = lambda: after_m2.append(True) if len(self.points) == 1 else None
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertEqual(calls.count('COMMIT'), 1)
+
+    def test_t2_failure_zero_commit_attempts(self):
+        connection = self.store._connection
+        calls = []
+        class Trace:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql); return connection.execute(sql, *args)
+        self.store._connection = Trace()
+        self.points = [1000, 90001]
+        self.assertTrue(self.run_b().reconciliation_required)
+        self.assertNotIn('COMMIT', calls)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+
+    def test_stale_durable_predecessor_rejects_without_new_mutation(self):
+        other, effects = self.acquire('unrelated', 'other-r', 'other-set')
+        self.execute(other, effects)
+        before = self.raw('SELECT count(*) FROM COMMANDS')
+        self.assertTrue(self.run_b().reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), before)
+
+    def test_invalid_qualification_never_enters_begin(self):
+        self.qualified = self.q.qualify_admission_inputs(None)
+        with self.assertRaises((core.CommandRejected, self.v.TimeRejected)): self.run_b()
+        self.assertEqual(self.calls, [])
+
+    def test_fixed_finalizer_has_no_transaction_closure_or_public_token(self):
+        self.assertIsNone(core._finalize_qualified.__closure__)
+        for name in ('prepare_commit', 'authorize_commit', 'suspend'):
+            self.assertFalse(hasattr(s.TransactionWriter, name))
+            self.assertFalse(hasattr(s.LeaseStore, name))
+        self.assertNotIn('finalizer', core._Finalization.__dataclass_fields__)
+        self.assertFalse(any(name in core._Finalization.__dataclass_fields__ for name in ('store', 'writer', 'connection')))
+
+    def test_required_inputs_have_no_none_defaults(self):
+        self.assertIsNone(core.complete_qualified.__defaults__)
+        self.assertIsNone(core.complete_qualified.__kwdefaults__)
+
+    def test_scope_exhaustion_does_not_trigger_lazy_qualification(self):
+        self.points = [1000, 90001]
+        self.run_b()
+        self.assertEqual(self.calls.count('qualify'), 1)
+        self.assertNotIn(('E', 90001), self.calls)
+
+    def test_t2_sample_age_includes_error(self):
+        def rewrite(projection):
+            kind, data = projection
+            if type(data) is tuple and data and type(data[0]) is tuple and type(data[0][0]) is str:
+                data = tuple((name, (int, 90) if kind is self.v.QualifiedClockProfile and name == 'max_sample_age_us'
+                              else rewrite(child)) for name, child in data)
+            return kind, data
+        self.qualified = self.q.a._copy_projection(rewrite(self.q._project(self.qualified)))
+        self.adapter = replace(self.adapter, evaluate_error_ns=lambda n: 1000 if n == 90000 else 0)
+        self.points = [1000, 90000]
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.CLOCK_REJECTED)
+
+    def test_t2_uncertainty_failure(self):
+        self.adapter = replace(self.adapter, evaluate_error_ns=lambda n: 6000 if n == 4000 else 0)
+        self.assertEqual(self.run_b().local.outcome, p.OutcomeCode.CLOCK_REJECTED)
+
+    def test_reservation_expiry_does_not_supply_completion_bound(self):
+        # Build retained history whose immutable reservation expiry lies between
+        # T1 and T2. RECORD_EXECUTION has independently qualified lease N/A;
+        # this does not manufacture a universal reservation-expiry gate.
+        self.tearDown()
+        CommandsTests.setUp(self)
+        self.command = replace(self.command, parameters=replace(self.command.parameters,
+            proposed_expires_at=13, proposed_completion_deadline=12))
+        self.material = replace(self.material, reservation=replace(self.material.reservation,
+            expires_at=13, completion_deadline=12))
+        self.execute()
+        self.command, self.material = CommandsTests.mutate(self, 'b-expiry-record')
+        self.material = replace(self.material, utc_time=10, last_valid_utc=999)
+        self.qualified = self.make_qualification()
+        self.adapter = replace(self.adapter, support=self.qualified.inputs.support)
+        self.assertIs(self.qualified.inputs.observation.time.lease_applicability,
+                      self.v.TimingApplicability.NOT_APPLICABLE)
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertGreater(result.t2.evaluation.interval.lower_us, result.completed.reservation.expires_at)
+
+    def test_known_local_invalidation_before_dispatch_cancels_commit(self):
+        self.measure_hook = lambda: setattr(self.store, '_poisoned', True) if len(self.points) == 1 else None
+        result = self.run_b()
+        self.assertTrue(result.reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_error_implementation_cannot_be_its_own_qualifier(self):
+        self.adapter = replace(self.adapter, qualify=self.adapter.evaluate_error_ns)
+        with self.assertRaises(core.CommandRejected): self.run_b()
+        self.assertEqual(self.calls, [])
+
+    def test_partial_iterator_traps_after_m2_without_sqlite_advance(self):
+        held = []
+        gather = core._gather_admission
+        def gathering(writer, *args):
+            result = gather(writer, *args)
+            iterator = writer.iter_rows(s.ArtifactRow)
+            next(iterator)
+            held.append(iterator)
+            return result
+        def at_point():
+            if len(self.points) == 1:
+                with self.assertRaises(s.StorageRejected): next(held[0])
+        self.measure_hook = at_point
+        with patch.object(core, '_gather_admission', gathering):
+            result = self.run_b()
+        self.assertTrue(result.reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_qualification_timeout_is_prebegin_only(self):
+        def unavailable(*args): raise TimeoutError('qualification unavailable')
+        self.adapter = replace(self.adapter, qualify=unavailable)
+        with self.assertRaises(core.CommandRejected): self.run_b()
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.store._connection.in_transaction)
+
+    def test_callback_owned_point_mutation_cannot_change_elapsed_binding(self):
+        point = self.v.MonotonicPoint('process', 'domain', 1000)
+        def error(n):
+            object.__setattr__(point, 'ticks_ns', 4000)
+            return 0
+        self.adapter = replace(self.adapter, measure=lambda: point, evaluate_error_ns=error)
+        self.assertTrue(self.run_b().reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_qualified_rounding_uses_existing_outward_conventions(self):
+        self.error_value = 500
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertEqual(result.t1.evaluation.interval, self.v.UtcInterval(10, 12))
+        self.assertEqual(result.t1.evaluation.sample_age_upper_us, 2)
+        self.assertEqual(result.t2.evaluation.interval, self.v.UtcInterval(13, 15))
+
+    def test_busy_begin_rejected_once_without_poison_or_measurement(self):
+        other = sqlite3.connect(self.path, isolation_level=None)
+        try:
+            other.execute('BEGIN IMMEDIATE')
+            result = self.run_b()
+            self.assertEqual(result.local.outcome, p.OutcomeCode.BUSY_REJECTED)
+            self.assertTrue(result.reconciliation_required)
+            self.assertFalse(self.store._poisoned)
+            self.assertEqual(self.calls, ['qualify'])
+        finally:
+            other.execute('ROLLBACK'); other.close()
+
+    def test_uncertain_commit_cleanup_is_not_nonexecution_proof(self):
+        connection, calls = self.store._connection, []
+        class BeforeCommit:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                if sql == 'COMMIT': raise sqlite3.OperationalError('unproven dispatch')
+                return connection.execute(sql, *args)
+        self.store._connection = BeforeCommit()
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.STORAGE_UNKNOWN)
+        self.assertEqual(calls.count('COMMIT'), 1)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertTrue(result.reconciliation_required)
+        self.assertTrue(self.store._poisoned)
+
+    def test_t2_rollback_uncertainty_has_no_commit_or_false_rejection(self):
+        connection, calls = self.store._connection, []
+        class BrokenRollback:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                calls.append(sql)
+                if sql == 'ROLLBACK': raise sqlite3.OperationalError('cleanup unavailable')
+                return connection.execute(sql, *args)
+        self.store._connection = BrokenRollback()
+        self.points = [1000, 90001]
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.STORAGE_UNKNOWN)
+        self.assertNotIn('COMMIT', calls)
+        self.assertEqual(calls.count('ROLLBACK'), 1)
+        self.assertTrue(self.store._poisoned)
+
+    def test_unsupported_model_binding_rejects_before_qualification(self):
+        self.adapter = replace(self.adapter, support=replace(self.adapter.support, interpretation=self.proof))
+        with self.assertRaises(core.CommandRejected): self.run_b()
+        self.assertEqual(self.calls, [])
+
+    def test_genuine_lease_continuation_is_independently_applicable(self):
+        self.rewrite_qualification(self.q.g.TimeEvidence, 'lease_applicability', self.v.TimingApplicability.REQUIRED)
+        self.rewrite_qualification(self.q.g.TimeEvidence, 'lease_deadline', self.v.StrictDeadline(14))
+        self.assertTrue(self.run_b().reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_foreign_qualification_rejected_without_hooks(self):
+        class Foreign:
+            def __getattribute__(inner, name): raise AssertionError('foreign traversal')
+            def __eq__(inner, other): raise AssertionError('foreign equality')
+        self.qualified = Foreign()
+        with self.assertRaises((core.CommandRejected, self.v.TimeRejected)): self.run_b()
+        self.assertEqual(self.calls, [])
+
+    def test_precommit_confirmed_cleanup_signal_cannot_fabricate_confirmation(self):
+        with patch.object(core, '_append', side_effect=s._ConfirmedCommitCleanup()):
+            result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.AUTHORITY_REJECTED)
+        self.assertIsNone(result.local.storage_result)
+        self.assertTrue(result.reconciliation_required)
+        self.assertIsNot(result.reason, s._CommitCleanupReason.CURSOR_CLOSE)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_statement_rejection_does_not_invent_clock_or_unknown_outcome(self):
+        with patch.object(core, '_append', side_effect=s.StorageRejected('statement rejected')):
+            result = self.run_b()
+        self.assertIsNone(result.local)
+        self.assertTrue(result.reconciliation_required)
+        self.assertEqual(result.reason, self.v.AdmissionReason.UNAVAILABLE)
+        self.assertFalse(self.store._connection.in_transaction)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+
+    def test_existing_reservation_no_separate_read_between_m1_and_update(self):
+        self.command = p.decode_record(self.store.read_rows(s.CommandRow)[0].canonical_payload_bytes, p.CommandPayload)
+        self.command, self.material = CommandsTests.mutate(self, 'b-record')
+        self.material = replace(self.material, utc_time=10, last_valid_utc=999)
+        self.qualified = self.make_qualification()
+        self.adapter = replace(self.adapter, support=self.qualified.inputs.support)
+        connection = self.store._connection
+        between, mutations = [], []
+        self.measure_hook = lambda: between.append(True) if len(self.points) == 2 else None
+        class FirstWrite:
+            def __getattr__(inner, name): return getattr(connection, name)
+            def execute(inner, sql, *args):
+                if between:
+                    self.assertTrue(sql.startswith('UPDATE RESERVATIONS'))
+                    mutations.append(sql)
+                    between.clear()
+                return connection.execute(sql, *args)
+        self.store._connection = FirstWrite()
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertEqual(len(mutations), 1)
+
+
+def b_changed_proof_inputs(test, response, path, value):
+    inputs = test.q._copy(response.inputs)
+    owner = inputs
+    names = path.split('.')
+    for name in names[:-1]: owner = object.__getattribute__(owner, name)
+    object.__setattr__(owner, names[-1], value)
+    return replace(response, inputs=inputs)
+
+
+def b_proof_case(name, transform):
+    def test(self):
+        self.proof_transform = lambda response: transform(self, response)
+        with self.assertRaises((core.CommandRejected, self.v.TimeRejected)): self.run_b()
+        self.assertEqual(self.calls, ['qualify'])
+        self.assertFalse(self.store._connection.in_transaction)
+    setattr(QualifiedWriterTests, 'test_proof_' + name, test)
+
+
+for _name, _transform in (
+    ('invalid', lambda t, v: replace(v, validity=t.v.EvidenceValidity.INVALID)),
+    ('unknown', lambda t, v: replace(v, validity=t.v.EvidenceValidity.UNKNOWN)),
+    ('boolean', lambda t, v: True),
+    ('implementation', lambda t, v: replace(v, implementation=t.proof)),
+    ('measurement', lambda t, v: replace(v, measurement=t.proof)),
+    ('process', lambda t, v: replace(v, process_id='other')),
+    ('domain', lambda t, v: replace(v, domain_id='other')),
+    ('unknown_applicability', lambda t, v: replace(v, completion_applicability=t.v.TimingApplicability.UNKNOWN)),
+    ('required_missing', lambda t, v: replace(v, completion_applicability=t.v.TimingApplicability.REQUIRED)),
+    ('not_applicable_deadline', lambda t, v: replace(v, completion_deadline=t.v.StrictDeadline(100))),
+    ('sample', lambda t, v: b_changed_proof_inputs(t, v, 'observation.time.sample.sample', t.proof)),
+    ('profile', lambda t, v: b_changed_proof_inputs(t, v, 'observation.time.sample.profile', t.proof)),
+    ('source', lambda t, v: b_changed_proof_inputs(t, v, 'observation.time.sample.source', 'other')),
+    ('model', lambda t, v: b_changed_proof_inputs(t, v, 'support.model', t.proof)),
+    ('interpretation', lambda t, v: b_changed_proof_inputs(t, v, 'support.interpretation', t.proof)),
+): b_proof_case(_name, _transform)
+
+
+def b_point_case(name, points, process='process', domain='domain'):
+    def test(self):
+        self.points = list(points)
+        if process != 'process' or domain != 'domain':
+            self.adapter = replace(self.adapter, measure=lambda: self.v.MonotonicPoint(process, domain, 1000))
+        result = self.run_b()
+        self.assertTrue(result.reconciliation_required)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+    setattr(QualifiedWriterTests, 'test_point_' + name, test)
+
+
+for _name, _points, _process, _domain in (
+    ('before_scope', (0, 4000), 'process', 'domain'),
+    ('beyond_scope', (90001, 90002), 'process', 'domain'),
+    ('permit_expired_at_t1', (3000, 4000), 'process', 'domain'),
+    ('backward_t2', (1000, 500), 'process', 'domain'),
+    ('process', (1000, 4000), 'other', 'domain'),
+    ('domain', (1000, 4000), 'process', 'other'),
+): b_point_case(_name, _points, _process, _domain)
+
+
+def b_error_case(name, value):
+    def test(self):
+        self.error_value = value
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.CLOCK_REJECTED)
+        self.assertEqual(self.raw('SELECT count(*) FROM COMMANDS'), [(1,)])
+    setattr(QualifiedWriterTests, 'test_error_' + name, test)
+
+
+def b_consumption_expiry_case(name):
+    def test(self):
+        self.rewrite_qualification(self.v.CommandPermit, 'valid_until_us', 13 if name == 'permit' else 100)
+        self.rewrite_qualification(self.q.g.AuthorizationEvidence, 'deadline', self.v.InclusiveDeadline(12 if name == 'authorization' else 100))
+        self.rewrite_qualification(self.q.g.ApprovalEvidence, 'deadline', self.v.InclusiveDeadline(12 if name == 'approval' else 100))
+        result = self.run_b()
+        self.assertEqual(result.local.outcome, p.OutcomeCode.SUCCESS)
+        self.assertEqual(result.t2.evaluation.interval.lower_us, 14)
+    setattr(QualifiedWriterTests, 'test_consumption_only_expiry_' + name, test)
+
+
+for _name in ('permit', 'authorization', 'approval'): b_consumption_expiry_case(_name)
+
+
+for _name, _value in (('bool', True), ('float', 0.0), ('negative', -1), ('foreign', object()),
+                       ('overflow', 1 << 63), ('uncertainty', 100000)):
+    b_error_case(_name, _value)
 
 
 if __name__=='__main__':

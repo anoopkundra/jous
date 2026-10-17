@@ -1,14 +1,17 @@
-"""IL.4B internal local completion, never issuer permission or operational ACK.
+"""Shared local completion, never operational ACK or downstream permission.
 
-All transition, identity, approval, timing and lifecycle facts are structural
-inputs established elsewhere. No clocks, permits, dispatch, network or recovery.
+Legacy entries accept structural facts. Qualified B binds independently proven
+inputs before BEGIN and evaluates captured local timing at writer-owned T1/T2.
+No provider selection, permit effect, publication, delivery or recovery occurs.
 """
 from dataclasses import dataclass, fields, replace
 from hashlib import sha256
+from types import FunctionType, MethodType
 
 from . import fixture_lease_protocol as p
 from . import fixture_lease_store as s
 from . import fixture_lease_service as service
+from . import fixture_lease_admission_qualification as qualification_values
 
 
 class CommandRejected(ValueError):
@@ -36,6 +39,252 @@ class LocalCommandResult:
     retained_ack_bytes: bytes | None
     replayed: bool
     storage_result: s.LocalStorageResult | None
+
+
+@dataclass(frozen=True, repr=False)
+class LocalTimingQualification:
+    """Independent verifier response, never authority when supplied by a caller.
+
+    Proof covers the exact inputs AND actual captured measurement/error function
+    implementations identified by implementation/measurement, including purity,
+    bounded deterministic execution, no lazy I/O, units and error accounting.
+    Completion applicability is independently qualified over the whole A scope.
+    """
+    inputs: qualification_values.QualifiedAdmissionInputs
+    implementation: service.EvidenceReference
+    measurement: service.EvidenceReference
+    process_id: str
+    domain_id: str
+    validity: service.EvidenceValidity
+    proof: service.EvidenceReference
+    completion_applicability: service.TimingApplicability
+    completion_deadline: service.InclusiveDeadline | service.StrictDeadline | None
+
+
+@dataclass(frozen=True, repr=False)
+class LocalTimingAdapter:
+    """Trusted composition dependency, selected outside request evidence.
+
+    qualify(inputs, implementation, measurement, measure, evaluate_error_ns)
+    independently authenticates exact implementation identities and bindings.
+    It does not ask the error function to certify itself. Only qualify may do
+    read-only external qualification, BEFORE BEGIN. The two captured executable
+    references are trusted code, not detached evidence or a Python sandbox.
+    """
+    support: qualification_values.ModelSupport
+    implementation: service.EvidenceReference
+    measurement: service.EvidenceReference
+    qualify: object
+    measure: object
+    evaluate_error_ns: object
+
+
+@dataclass(frozen=True, repr=False)
+class _TimingEvidence:
+    inputs: qualification_values.QualifiedAdmissionInputs
+    implementation: service.EvidenceReference
+    measurement: service.EvidenceReference
+    proof: service.EvidenceReference
+    completion_applicability: service.TimingApplicability
+    completion_deadline: service.InclusiveDeadline | service.StrictDeadline | None
+
+
+@dataclass(frozen=True, repr=False)
+class _BoundTiming:
+    # Detached evidence and captured executable references are separate roles.
+    evidence: _TimingEvidence
+    measure: object
+    evaluate_error_ns: object
+
+
+@dataclass(frozen=True)
+class _PointEvidence:
+    point: service.MonotonicPoint
+    propagation: service.QualifiedPropagationError
+    evaluation: service.TimeEvaluation
+
+
+@dataclass(frozen=True, repr=False)
+class _CompletedEvidence:
+    envelope: service.RetainedAdmissionEnvelope
+    permit: service.CommandPermit
+    command_bytes: bytes
+    ack_bytes: bytes
+    reservation: s.ReservationRow
+    key_digest: bytes
+    event_sequence: int
+    event_digest: bytes
+    state_digest: bytes
+    last_valid_utc: int
+    t1: _PointEvidence
+
+
+@dataclass(repr=False)
+class _Finalization:
+    # Private per-invocation context: no store/writer/connection/iterator and no
+    # finalizer callback. Store captures the one module-level finalizer.
+    bound: _BoundTiming
+    completed: _CompletedEvidence | None = None
+    t1: _PointEvidence | None = None
+    t2: _PointEvidence | None = None
+    replayed: bool = False
+    cleanup_reason: s._CommitCleanupReason | None = None
+
+
+@dataclass(frozen=True, repr=False)
+class _QualifiedCompletion:
+    local: LocalCommandResult | None
+    original: qualification_values.QualifiedAdmissionInputs
+    t1: _PointEvidence | None
+    t2: _PointEvidence | None
+    completed: _CompletedEvidence | None
+    reason: service.AdmissionReason | s._CommitCleanupReason | None
+    reconciliation_required: bool
+    later_contradiction: service.EvidenceReference | None = None
+
+    def __bool__(self):
+        raise TypeError('Local storage knowledge is not operational permission')
+
+
+def _copy_evidence(value):
+    return qualification_values._copy(value)
+
+
+def _bind_timing(result, adapter):
+    q = qualification_values
+    require(type(result) is q.AdmissionQualificationResult)
+    original = q._project(result)
+    saved = q._copy(result)
+    q._validate(saved)
+    require(saved.state is q.QualificationState.QUALIFIED)
+    require(type(adapter) is LocalTimingAdapter)
+    support, implementation, measurement = adapter.support, adapter.implementation, adapter.measurement
+    qualify, measure, error = adapter.qualify, adapter.measure, adapter.evaluate_error_ns
+    require(all(type(fn) is FunctionType or type(fn) is MethodType for fn in (qualify, measure, error)))
+    qualify_identity = (qualify.__func__, qualify.__self__) if type(qualify) is MethodType else (qualify, None)
+    for executable in (measure, error):
+        executable_identity = ((executable.__func__, executable.__self__) if type(executable) is MethodType
+                               else (executable, None))
+        require(not (qualify_identity[0] is executable_identity[0]
+                     and qualify_identity[1] is executable_identity[1]))
+    q._validate(support)
+    require(q._project(support) == q._project(saved.inputs.support))
+    for ref in (implementation, measurement):
+        require(type(ref) is service.EvidenceReference)
+        q.r._validate(ref)
+    implementation, measurement = _copy_evidence(implementation), _copy_evidence(measurement)
+    request = q._copy(saved.inputs)
+    request_projection = q._project(request)
+    # One separately composed qualification, never delegated to E itself.
+    try:
+        response = qualify(request, _copy_evidence(implementation), _copy_evidence(measurement), measure, error)
+    except (service.CapabilityUnavailable, qualification_values.a.ExternalAvailabilityFailure, TimeoutError):
+        require(q._unchanged(result, original) and q._unchanged(request, request_projection))
+        raise CommandRejected('LOCAL_TIMING_UNAVAILABLE') from None
+    require(q._unchanged(result, original) and q._unchanged(request, request_projection))
+    require(type(response) is LocalTimingQualification)
+    require(type(response.inputs) is q.QualifiedAdmissionInputs)
+    require(q._project(response.inputs) == request_projection)
+    for ref in (response.implementation, response.measurement, response.proof):
+        require(type(ref) is service.EvidenceReference)
+        q.r._validate(ref)
+    require(response.implementation == implementation and response.measurement == measurement)
+    require(response.validity is service.EvidenceValidity.VALID)
+    model = saved.inputs.observation.model
+    require(type(response.process_id) is str and type(response.domain_id) is str)
+    require((response.process_id, response.domain_id) == (model.process_id, model.domain_id))
+    applicability, deadline = response.completion_applicability, response.completion_deadline
+    require(type(applicability) is service.TimingApplicability)
+    require(applicability is not service.TimingApplicability.UNKNOWN)
+    require((applicability is service.TimingApplicability.REQUIRED) == (deadline is not None))
+    if deadline is not None:
+        require(type(deadline) is service.InclusiveDeadline or type(deadline) is service.StrictDeadline)
+        q.r._validate(deadline)
+        deadline = _copy_evidence(deadline)
+    evidence = _TimingEvidence(saved.inputs, implementation, measurement, _copy_evidence(response.proof),
+                               applicability, deadline)
+    return _BoundTiming(evidence, measure, error)
+
+
+def _writer_time(bound, previous=None):
+    evidence = bound.evidence
+    observation = evidence.inputs.observation
+    time, model = observation.time, observation.model
+    # Executable references were captured/qualified before BEGIN; never resolve
+    # a method/provider/model here. Only this local measurement is performed.
+    measure, error_function = bound.measure, bound.evaluate_error_ns
+    point = measure()
+    service.require(type(point) is service.MonotonicPoint)
+    qualification_values.r._validate(point)
+    point_snapshot = qualification_values.r._project(point)
+    service.require((point.process_id, point.domain_id) == (model.process_id, model.domain_id))
+    elapsed = point.ticks_ns - time.sample.anchor.ticks_ns
+    service.integer(elapsed, 0)
+    service.require(model.min_elapsed_ns <= elapsed <= model.max_elapsed_ns)
+    if previous is not None:
+        service.require(point.ticks_ns >= previous.ticks_ns)
+    error = error_function(elapsed)
+    service.require(qualification_values.r._project(point) == point_snapshot)
+    service.integer(error, 0)
+    propagation = service.QualifiedPropagationError(time.sample.sample, time.profile.profile,
+        elapsed, error, evidence.proof)
+    evaluation = service.evaluate_time(time.sample, time.profile, point, propagation)
+    return _PointEvidence(_copy_evidence(point), propagation, evaluation)
+
+
+def _continuing_bounds(bound, evaluation):
+    evidence = bound.evidence
+    observation = evidence.inputs.observation
+    service.require(all(v is service.EvidenceValidity.VALID for v in qualification_values._validities(observation)))
+    interval = evaluation.interval
+    for applicability, deadline in (
+            (observation.time.freshness_applicability, observation.time.freshness_deadline),
+            (observation.time.lease_applicability, observation.time.lease_deadline),
+            (evidence.completion_applicability, evidence.completion_deadline)):
+        service.require(applicability is not service.TimingApplicability.UNKNOWN)
+        service.require((applicability is service.TimingApplicability.REQUIRED) == (deadline is not None))
+        if deadline is not None:
+            check = service.strict_bound if type(deadline) is service.StrictDeadline else service.inclusive_bound
+            service.require(check(interval, deadline) is service.TimingBound.SATISFIED)
+
+
+def _finalize_qualified(payload):
+    """Fixed store-owned finalizer. No transaction-frame closure or durable I/O."""
+    require(type(payload) is _Finalization)
+    if payload.replayed:
+        require(payload.completed is None and payload.t1 is None)
+        return
+    completed, bound = payload.completed, payload.bound
+    require(type(completed) is _CompletedEvidence and type(payload.t1) is _PointEvidence)
+    t2 = _writer_time(bound, payload.t1.point)
+    _continuing_bounds(bound, t2.evaluation)
+    require(t2.evaluation.interval.lower_us >= completed.last_valid_utc)
+    require(completed.last_valid_utc == payload.t1.evaluation.interval.lower_us)
+    ack = p.decode_record(completed.ack_bytes, p.AckPayload)
+    require(completed.envelope.fixed_utc_us == ack.issued_at)
+    require(completed.command_bytes == completed.envelope.canonical_command_bytes)
+    require(ack.command_payload_sha256 == sha256(completed.command_bytes).digest())
+    require((ack.reservation_id, ack.resulting_revision, ack.canonical_key_set_digest,
+             ack.final_event_sequence, ack.final_event_digest) ==
+            (completed.reservation.reservation_id, completed.reservation.revision,
+             completed.key_digest, completed.event_sequence, completed.event_digest))
+    require(completed.permit.evidence == completed.envelope.permit_reference)
+    require(type(completed.state_digest) is bytes and len(completed.state_digest) == 32)
+    payload.t2 = t2
+
+
+def _later_contradiction(store, result, evidence):
+    """Deny progression only; no qualification, compensation or IL.7 execution.
+
+    Trusted orchestration reports a contradiction of evidence actually relied
+    upon. Local poisoning is NOT protected/issuer-wide fencing. No clear path.
+    """
+    require(type(store) is s.LeaseStore and type(result) is _QualifiedCompletion)
+    require(type(evidence) is service.EvidenceReference)
+    qualification_values.r._validate(evidence)
+    store._poisoned = True
+    return replace(result, reconciliation_required=True, reason=service.AdmissionReason.TIME,
+                   later_contradiction=_copy_evidence(evidence))
 
 
 def _adapt(row, cls):
@@ -269,7 +518,7 @@ def _append(writer, metadata, command, material):
     return tuple(events), tuple(digests)
 
 
-def _complete(store, command, context, material=None, admission=None):
+def _complete(store, command, context, material=None, admission=None, finalization=None, unchanged=None):
     """One local transaction; supplied facts are not self-authenticating authority.
 
     Replay material is ignored after exact durable recognition. This result is
@@ -281,7 +530,8 @@ def _complete(store, command, context, material=None, admission=None):
     require(type(store) is s.LeaseStore)
     result = None
     try:
-        with store.transaction() as writer:
+        transaction = store.transaction() if finalization is None else store._qualified_transaction(finalization)
+        with transaction as writer:
             metadata = writer.lookup(s.MetadataRow, 1)
             require(metadata is not None)
             durable = writer.lookup(s.CommandRow, command.command_id)
@@ -297,7 +547,10 @@ def _complete(store, command, context, material=None, admission=None):
             else:
                 previous = writer.lookup(s.ReservationRow, command.parameters.target_reservation_id)
                 _transition(writer, metadata, command, material, previous)
-                if admission is not None:
+                if finalization is not None:
+                    material = _admit_qualified(writer, metadata, command, raw, context, material,
+                                                previous, finalization, unchanged)
+                elif admission is not None:
                     _admit(writer, metadata, command, raw, context, material, previous, admission)
                 if previous is None:
                     writer.insert(material.reservation)
@@ -334,7 +587,28 @@ def _complete(store, command, context, material=None, admission=None):
                     last_event_digest=digests[-1], state_digest=digest)
                 writer.complete_metadata(projected, completed)
                 result = LocalCommandResult(p.OutcomeCode.SUCCESS, retained, False, None)
+                if finalization is not None:
+                    envelope = finalization.bound.evidence.inputs.observation.source.envelope
+                    permit = finalization.bound.evidence.inputs.observation.source.prepared.material.source.qualification.permit
+                    finalization.completed = _CompletedEvidence(envelope, permit, raw, retained, row,
+                        p.key_set_digest(keys), completed.last_event_sequence, completed.last_event_digest,
+                        completed.state_digest, completed.last_valid_utc, finalization.t1)
+            if finalization is not None and finalization.completed is None:
+                # Historical recognition has no new-transition T1/T2 finalizer.
+                # The store still validates/seals and commits its read-only body.
+                finalization.replayed = True
         require(writer.result == s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        return replace(result, storage_result=writer.result)
+    except s._ConfirmedCommitCleanup as error:
+        if finalization is None:
+            # Preserve the legacy StorageRejected exception contract. Only B
+            # has a bounded reconciliation wrapper for this confirmed fact.
+            raise
+        require(type(result) is LocalCommandResult
+                and writer.result is s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED
+                and error.storage_result is writer.result
+                and error.reason is s._CommitCleanupReason.CURSOR_CLOSE)
+        finalization.cleanup_reason = error.reason
         return replace(result, storage_result=writer.result)
     except s.StorageOutcomeUncertain:
         return LocalCommandResult(p.OutcomeCode.STORAGE_UNKNOWN, None, False, None)
@@ -364,6 +638,20 @@ def complete_admitted(store: s.LeaseStore, command: p.CommandPayload, context: p
 
 def _admit(writer, metadata, command, raw, context, material, previous, admission):
     evidence, host, representation_authority, checker = admission
+    facts = _gather_admission(writer, metadata, command, raw, context, material, previous,
+                              host, representation_authority)
+    try:
+        decision = service.validate_admission(evidence, facts)
+        require(decision.disposition is service.AdmissionDisposition.ADMIT)
+        if checker is not service.validate_admission:
+            decision = checker(evidence, facts)
+    except Exception:
+        raise CommandRejected('ADMISSION_CHECKER_REJECTED') from None
+    require(type(decision) is service.AdmissionDecision
+            and decision.disposition is service.AdmissionDisposition.ADMIT)
+
+
+def _gather_admission(writer, metadata, command, raw, context, material, previous, host, representation_authority):
     approval_ref = (command.binding_reference if command.command_kind in
         (p.contract.Command.ACQUIRE, p.contract.Command.ADVANCE)
         else command.parameters.primary_evidence_reference)
@@ -373,7 +661,7 @@ def _admit(writer, metadata, command, raw, context, material, previous, admissio
         writer.lookup(s.ArtifactRow, ref.artifact_id).sha256) for ref in refs)
     # All durable inputs are read while the same writer transaction is active.
     try:
-        facts = service.AdmissionFacts(raw,
+        return service.AdmissionFacts(raw,
             service.CommandContext(command.command_id, sha256(raw).digest(), command.command_kind,
                 command.operation, command.phase, command.expected_revision,
                 service.EvidenceReference(command.authorization_reference.artifact_id,
@@ -385,12 +673,122 @@ def _admit(writer, metadata, command, raw, context, material, previous, admissio
             tuple(claim.canonical_key for claim in writer.claims_for(material.reservation.reservation_id)),
             retained, artifact.approval_record_hash, metadata.last_valid_utc,
             material.utc_time, material.last_valid_utc)
-        # An injected pure checker cannot weaken mandatory published bindings.
-        decision = service.validate_admission(evidence, facts)
-        require(decision.disposition is service.AdmissionDisposition.ADMIT)
-        if checker is not service.validate_admission:
-            decision = checker(evidence, facts)
-    except Exception:
+    except service.TimeRejected:
         raise CommandRejected('ADMISSION_CHECKER_REJECTED') from None
-    require(type(decision) is service.AdmissionDecision
-            and decision.disposition is service.AdmissionDisposition.ADMIT)
+
+
+def _material_projection(material):
+    require(type(material) is PreparedTransition and type(material.reservation) is s.ReservationRow)
+    require(type(material.claim_inserts) is tuple and type(material.claim_deletes) is tuple)
+    require(type(material.definite_expiry) is bool)
+    p.utc(material.utc_time); p.utc(material.last_valid_utc)
+    for claim in material.claim_inserts + material.claim_deletes:
+        require(type(claim) is s.ClaimRow)
+    return (s._values(material.reservation), tuple(s._values(v) for v in material.claim_inserts),
+            tuple(s._values(v) for v in material.claim_deletes), material.utc_time,
+            material.last_valid_utc, material.definite_expiry)
+
+
+def _copy_material(material):
+    _material_projection(material)
+    return replace(material, reservation=replace(material.reservation),
+                   claim_inserts=tuple(replace(v) for v in material.claim_inserts),
+                   claim_deletes=tuple(replace(v) for v in material.claim_deletes))
+
+
+def _admit_qualified(writer, metadata, command, raw, context, material, previous, payload, unchanged):
+    bound = payload.bound
+    observation = bound.evidence.inputs.observation
+    envelope = observation.source.envelope
+    facts = _gather_admission(writer, metadata, command, raw, context, material, previous,
+                              envelope.activation.host_identity, envelope.predecessor.representation_authority)
+    # All admission durable reads have now finished. Facts, command and effects
+    # are detached exact values; measurement functions receive none of them.
+    point = _writer_time(bound)
+    payload.t1 = point
+    interval = point.evaluation.interval
+    require(material.utc_time == envelope.fixed_utc_us)
+    effective = replace(material, last_valid_utc=interval.lower_us)
+    facts = replace(facts, proposed_last_valid_utc_us=interval.lower_us)
+    auth, approval = observation.authorization, observation.approval
+    service.require(service.valid_from_satisfied(interval, auth.valid_from_us))
+    service.require(service.inclusive_bound(interval, auth.deadline) is service.TimingBound.SATISFIED)
+    if approval.applicability is service.ApprovalApplicability.REQUIRED:
+        service.require(service.valid_from_satisfied(interval, approval.valid_from_us))
+        service.require(service.inclusive_bound(interval, approval.deadline) is service.TimingBound.SATISFIED)
+    _continuing_bounds(bound, point.evaluation)
+    permit = observation.source.prepared.material.source.qualification.permit
+    evidence = service.AdmissionEvidence(envelope, permit, observation.time.sample, observation.time.profile,
+        point.point, point.propagation,
+        service.AdmissionCoverage(bound.evidence.proof, envelope.reference, envelope.context,
+            envelope.activation, point.point, interval), auth.deadline, observation.time.freshness_deadline,
+        observation.continuity, approval.validity, service.TimingApplicability.REQUIRED,
+        observation.time.freshness_applicability, observation.fixing_to_refresh)
+    decision = service.validate_admission(evidence, facts)
+    require(decision.disposition is service.AdmissionDisposition.ADMIT)
+    unchanged()
+    return effective
+
+
+def complete_qualified(store, command, context, material, *, qualification, timing):
+    """Bounded B entry; mandatory qualified inputs, no downstream effects.
+
+    This does not acquire/retain a permit or execute recovery. Historical lookup
+    remains in the shared core; no new-transition measurement runs for replay.
+    Executable purity and implementation authentication are trusted composition
+    requirements, not guarantees provided by Python function/class names.
+    """
+    require(type(store) is s.LeaseStore and type(context) is p.StateContext)
+    q = qualification_values
+    # Exact classification precedes codecs, traversal and equality.
+    command_projection = q._project(command)
+    q.g._revalidate(command)
+    detached_command = q._copy(command)
+    detached_context = replace(context)
+    material_projection = _material_projection(material)
+    detached_material = _copy_material(material)
+    source_projection = q._project(qualification)
+    bound = _bind_timing(qualification, timing)
+    payload = _Finalization(bound)
+
+    def unchanged():
+        require(q._unchanged(qualification, source_projection))
+        require(q._project(command) == command_projection)
+        require(_material_projection(material) == material_projection)
+        require(q._project(detached_command) == command_projection)
+        require(_material_projection(detached_material) == material_projection)
+    unchanged()
+    try:
+        local = _complete(store, detached_command, detached_context, detached_material,
+                          finalization=payload, unchanged=unchanged)
+    except s._BeginBusy:
+        local = LocalCommandResult(p.OutcomeCode.BUSY_REJECTED, None, False, None)
+        return _QualifiedCompletion(local, bound.evidence.inputs, None, None, None,
+                                    service.AdmissionReason.UNAVAILABLE, True)
+    except (CommandRejected, service.TimeRejected, s.StorageRejected) as error:
+        # Confirmed local rejection is NOT closure of the original permit.
+        store._poisoned = True
+        if isinstance(error, s.StorageRejected):
+            # Preserve the distinction: a confirmed storage rejection has no
+            # command outcome here. Do not invent CLOCK or STORAGE_UNKNOWN.
+            local, reason = None, service.AdmissionReason.UNAVAILABLE
+        else:
+            clock = isinstance(error, service.TimeRejected)
+            local = LocalCommandResult(p.OutcomeCode.CLOCK_REJECTED if clock else p.OutcomeCode.AUTHORITY_REJECTED,
+                                       None, False, None)
+            reason = service.AdmissionReason.TIME if clock else service.AdmissionReason.CHECKER
+        return _QualifiedCompletion(local, bound.evidence.inputs, payload.t1, payload.t2,
+                                    payload.completed, reason, True)
+    except BaseException:
+        store._poisoned = True
+        raise
+    if payload.cleanup_reason is not None:
+        require(local.storage_result is s.LocalStorageResult.LOCAL_STORAGE_COMMIT_CONFIRMED)
+        return _QualifiedCompletion(local, bound.evidence.inputs, payload.t1, payload.t2,
+                                    payload.completed, payload.cleanup_reason, True)
+    if payload.completed is None and local.outcome is not p.OutcomeCode.STORAGE_UNKNOWN:
+        return local
+    unresolved = local.outcome is p.OutcomeCode.STORAGE_UNKNOWN
+    return _QualifiedCompletion(local, bound.evidence.inputs, payload.t1, payload.t2,
+                                payload.completed, service.AdmissionReason.UNAVAILABLE if unresolved else None,
+                                unresolved)
