@@ -1063,3 +1063,27 @@ The gateway provides infrastructure.
 > **The gateway is not the moat. The economic relationship with the AI builder is the moat.**
 
 # END — JOUS.SUPPLY.1
+
+
+---
+
+## 2026-10-18 Clarification — Supply Economics Must Preserve Credible Work
+
+The completed Hugging Face, Vercel AI Gateway and OpenRouter benchmarks remain valid evidence for supplier selection, but supplier price is downstream of Project Context requirements.
+
+Canonical rule:
+
+> **A cheaper supplier route is not eligible if it cannot preserve the context required for credible project work.**
+
+Jous must continue to separate logical-model selection from supplier selection. Project/customer policy and Context Requirement determine the eligible logical-model set; supplier economics then determine the preferred eligible execution route.
+
+The current evidence-driven MVP posture remains:
+
+- **Hugging Face:** preferred initial economic/open-model supply candidate based on observed benchmark economics; no Hugging Face funding/platform surcharge was observed on the tested credit purchase, and routed inference was documented/observed at underlying-provider economics subject to continuing revalidation;
+- **Vercel AI Gateway:** strong managed routing/resilience route;
+- **OpenRouter:** strong broad marketplace, fallback and market-intelligence route, with funding overhead included in economic comparison;
+- **BYOK:** first-class customer-controlled supply route.
+
+None of these suppliers owns Project Context. Context/memory must remain provider-neutral above the adapter boundary so Jous can move credible work between suppliers without forcing the customer to rebuild project knowledge.
+
+Supplier evaluation should therefore eventually include not only inference/funding economics and reliability but also the effective cost of delivering sufficient context and the downstream retry/rework consequences of a route.
