@@ -4314,3 +4314,89 @@ The goal is to create the smallest trustworthy foundation on which the Jous econ
 
 \# END — JOUS.MVP.0 v2
 
+
+
+---
+
+# 52. 2026-10-18 MVP Product Clarification — Credible Work Economics
+
+This clarification is additive to JOUS.MVP.0 and does not reopen frozen CORE.1A implementation increments.
+
+## 52.1 Canonical MVP outcome
+
+Jous must optimize the economics of **credible completed work**, not merely the price of tokens or the cheapest available model route.
+
+A lower-priced route is not economically better when loss of project context, retries, escalation, rework, or an unusable result causes a higher effective task cost.
+
+Canonical principle:
+
+> **The economic unit Jous should optimize is the credible completed task, not the token.**
+
+The MVP customer loop is therefore:
+
+**Project → Persistent Context → Task → Context Requirement → Context Package → Logical Model → Supplier Route → Execution → Credible Result → Usage/Economic Evidence → Project Economics**
+
+The existing ordering remains authoritative: Project/customer policy and context requirements are resolved before logical-model and supplier economic optimization.
+
+## 52.2 Project continuity is an MVP requirement
+
+Project Context / Project Memory is not an optional convenience layer. It is required to preserve credible work when Jous routes successive tasks across different logical models or suppliers that do not share native conversational memory.
+
+The MVP must demonstrate that a project can accumulate authoritative decisions, constraints, artifacts and current state; a later task can be routed to a different eligible model/supplier; Jous can assemble the relevant provenance-aware context without requiring the customer to restate the project; and the resulting work remains consistent with the project's authoritative context.
+
+Jous must preserve the distinction between source context, derived context and provider-native memory. Provider-native memory may be used behind replaceable adapters, but it must not become the authoritative Project Context boundary.
+
+## 52.3 Credible-work economics
+
+Spend Intelligence and Project Economics should progressively account for the economics of successful work, including where measurable:
+
+- inference and supplier cost;
+- context assembly and context-delivery cost;
+- funding/gateway overhead;
+- retries and fallback;
+- model escalation;
+- failed or rejected outputs;
+- rework attributable to insufficient context;
+- and reusable-context loss or reconstruction cost.
+
+The MVP does not require a universal automated quality score. It does require enough evidence to distinguish raw execution cost from the effective cost of obtaining an accepted/credible result.
+
+## 52.4 Model selection and supplier selection remain separate
+
+Jous first determines an eligible logical model or model stack using task, capability, customer policy and context requirements. It then chooses an eligible supplier route using economic and operational evidence.
+
+A supplier route must never silently change or discard required Project Context merely because it is cheaper.
+
+## 52.5 MVP demonstration acceptance criterion
+
+A canonical MVP demonstration should show:
+
+1. a customer authenticates and opens a Project;
+2. the Project contains persistent authoritative context;
+3. one model performs work using that context;
+4. a later task is routed to a different eligible model and/or supplier;
+5. Jous automatically assembles the relevant Project Context for that task;
+6. the second model produces work consistent with the project's retained decisions and constraints;
+7. Jous records the logical model, supplier route, context usage, inference usage and economic evidence;
+8. Project Economics shows the effective cost of the work and a defensible comparison/saving where available.
+
+A demo that only routes a prompt to the cheapest API without preserving project continuity does **not** satisfy the Jous MVP thesis.
+
+## 52.6 Authentication decision
+
+For MVP, Jous will **INTEGRATE Supabase Auth** for commodity identity and login management rather than build a proprietary authentication system.
+
+Supabase Auth may own authentication concerns such as signup/login, session/token management, email verification, password reset and supported OAuth flows.
+
+Jous remains authoritative for application authorization and economic access, including Organizations, memberships/roles, Projects, wallets/balances, ledger authority, rewards, provider credentials and economic permissions. Authentication metadata must not become the financial or authorization source of truth.
+
+## 52.7 Supply benchmark interpretation
+
+The tested supplier/gateway set includes Hugging Face, Vercel AI Gateway and OpenRouter. The current benchmark evidence remains governed by JOUS.SUPPLY.1:
+
+- Hugging Face is the preferred initial economic/open-model supply candidate based on observed benchmark economics, including no observed Hugging Face funding/platform surcharge on the tested credit purchase;
+- Vercel AI Gateway is a strong managed routing/resilience route;
+- OpenRouter is a strong broad marketplace/fallback/market-intelligence route, with observed funding overhead included in JEAC;
+- all remain replaceable supply routes, not owners of Project Context or the Jous customer relationship.
+
+This supplier ordering is evidence-driven and revalidatable, not a permanent exclusivity decision.
