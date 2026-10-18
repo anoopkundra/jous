@@ -867,3 +867,30 @@ preserving customer choice.
 > preserves project context and optimizes the economics underneath.**
 
 # END --- JOUS.CONTEXT.1
+
+
+---
+
+## 2026-10-18 Clarification — Project Context as an Economic Requirement
+
+This clarification is additive and preserves the existing Project-primary context boundary.
+
+Project Context is a first-order economic input to Jous. Routing work across models or suppliers that lack shared native conversational memory must not destroy the knowledge required to produce credible work.
+
+Canonical principle:
+
+> **Context preservation precedes price optimization. A cheaper route that loses required project knowledge is not an economic optimization.**
+
+The canonical execution order is:
+
+**Project / Customer Policy → Context Requirement → Context Retrieval → Context Assembly → Context Optimization → Logical Model Selection → Supplier Selection → Economic Evaluation → Execution → Outcome Evidence**
+
+The Project remains the authoritative context boundary. Provider-native memory, gateway memory, caches, embeddings and future memory engines are replaceable implementation mechanisms and must not become the sole authority for project continuity.
+
+Context packages should be task-appropriate and provenance-aware rather than indiscriminately replaying full history. They should preserve authoritative decisions, constraints, relevant artifacts, current state, supersession/freshness and applicable permissions while minimizing unnecessary context cost.
+
+The MVP must prove cross-model continuity: after meaningful project knowledge has accumulated, a later task routed to another eligible model/supplier must receive the relevant Project Context automatically and produce work consistent with the project's authoritative decisions without requiring the customer to restate the project.
+
+Context evidence should be available to Project Economics so Jous can distinguish raw token savings from the effective economics of credible completed work. Where measurable, this includes context-delivery cost, reconstruction cost, retries/escalations and reusable-context loss.
+
+This clarification does not require one permanent memory engine and does not authorize provider-specific context dependencies above the adapter boundary.
