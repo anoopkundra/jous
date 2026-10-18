@@ -2184,3 +2184,30 @@ After JOUS.ECON.1 is frozen, the next architecture artifact should define the ca
 
 That artifact becomes the implementation contract before Codex begins JOUS.CORE.1A.
 
+
+
+---
+
+## 2026-10-18 Clarification — Credible-Work Economics
+
+JOUS.ECON.1 clarifies the long-term optimization target:
+
+> **Jous should optimize effective cost per credible completed task, not raw token price.**
+
+JEAC remains the supplier-acquisition accounting concept already defined here. Project Economics must additionally make visible the economic consequences of context and outcome quality where measurable.
+
+A nominally cheaper model/supplier route can be economically worse when it causes context reconstruction, retries, fallback, escalation, rejected work or rework. Conversely, spending more on relevant context can lower the effective cost of an accepted result.
+
+Economic evidence should therefore be capable of attributing, where available:
+
+- model/supplier inference cost;
+- context input and context-delivery cost;
+- gateway and funding overhead;
+- retries/fallback/escalation;
+- failed or rejected execution cost;
+- rework attributable to insufficient context;
+- and reusable-context reconstruction/loss.
+
+This does not require the MVP to invent a universal objective quality score. “Credible/accepted work” must be grounded in observable workflow evidence such as successful task completion, explicit customer acceptance, downstream acceptance, or another separately defined outcome signal.
+
+Economic routing must respect the context requirement before comparing eligible routes. A route that cannot receive/preserve the required Project Context is not economically eligible merely because its token price is lower.
