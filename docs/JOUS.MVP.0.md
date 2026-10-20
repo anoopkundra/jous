@@ -558,6 +558,59 @@ Engineering effort should concentrate on Jous's differentiated IP:
 
 Commodity infrastructure should remain replaceable.
 
+## JOUS.OSS.1 — Commodity Infrastructure Reuse & Build-vs-Adopt Policy
+
+Canonical engineering rule:
+
+> **Don't rebuild commodity infrastructure. Build Jous IP.**
+
+For every new capability, engineering must ask:
+
+1. Is this differentiated Jous IP?
+2. If not, does a mature OSS or managed solution already solve it?
+3. Can it be adopted without compromising Jous's domain boundaries, economics, security, portability, or customer-data boundaries?
+4. If yes, prefer **ADOPT** or **INTEGRATE** over **BUILD**.
+
+This rule does not authorize dependency adoption. A candidate is evaluated only when its corresponding MVP phase requires the capability. Do not refactor working code merely to adopt a third-party component, and do not add a dependency simply because it appears in the candidate matrix.
+
+Existing approved Jous domain boundaries remain authoritative. Commodity infrastructure must remain replaceable behind Jous-owned boundaries, and Jous domain/business logic must not migrate into third-party products. Before adoption, every dependency requires license, security, maintenance, lock-in, and data-boundary review.
+
+Jous must build and own its differentiated economic control plane, including the Jous Ledger, Spend Intelligence, Project Economics, Effective-Cost Engine, Economic Routing, Customer Economic Profile, Rewards Engine, economic decisions and receipts, supplier economics, completion/outcome economics, and Jous-specific policy/economic semantics.
+
+### Component-selection matrix
+
+EVALUATE means candidate only; it is not approval to install, integrate, configure, or refactor around the component. An existing authoritative Jous decision may establish a different status.
+
+| Capability | Classification | Candidate | Jous-owned boundary | MVP timing | Evaluation status | Decision | Rationale |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Authentication/session management | INTEGRATE | Supabase Auth | Jous identity adapter; organization/workspace/project membership and domain authorization | Identity/auth phase | APPROVED BY EXISTING CORE.1A DECISION | Use behind replaceable auth boundary | Existing CORE.1A decision approves Supabase Auth while keeping Jous authorization authoritative |
+| PostgreSQL/database | ADOPT | Existing Supabase/Postgres | Jous schemas, migrations, domain model, ledger/economic semantics | Foundation | APPROVED / EXISTING | Continue existing managed PostgreSQL | Existing architecture already uses PostgreSQL while avoiding unnecessary Supabase-specific domain semantics |
+| Tenant data enforcement | ADOPT / INTEGRATE | Postgres/Supabase RLS | Jous authorization policy and tenant/domain authority | Security/RLS phase | APPROVED IN EXISTING CORE.1A ARCHITECTURE | Use as defense in depth | RLS enforces data isolation; it does not replace Jous product authorization |
+| UI primitives | ADOPT | shadcn/ui | Jous design system and product behavior | Workspace/UI phase | EVALUATE | Undecided | Avoid rebuilding commodity primitives without outsourcing Jous UX |
+| Tables | ADOPT | TanStack Table | Jous Spend Intelligence/Project Economics semantics and interactions | Spend UI phase | EVALUATE | Undecided | Commodity table behavior can remain below Jous-owned economic experience |
+| Charts | ADOPT | Recharts | Jous visual language, metrics, explanations, economic semantics | Spend UI phase | EVALUATE | Undecided | Chart rendering is commodity; Jous owns what is measured and explained |
+| Application/object storage | INTEGRATE | Supabase Storage initially; Cloudflare R2 where appropriate | Jous object metadata, authorization, retention/data policy | File/context phase | EVALUATE | Undecided | Keep storage provider replaceable and data boundaries explicit |
+| Bot protection | INTEGRATE | Cloudflare Turnstile | Jous access/onboarding policy | Public exposure phase | EVALUATE | Undecided | Commodity abuse control should not become domain authority |
+| Error/performance monitoring | INTEGRATE | Sentry | Jous telemetry policy and sensitive-data boundaries | Operational hardening | EVALUATE | Undecided | Prefer mature observability while controlling data exposure |
+| Product analytics/feature flags | INTEGRATE | PostHog | Jous event semantics, consent/data policy, rollout authority | Beta/product analytics phase | EVALUATE | Undecided | Avoid custom analytics/flag infrastructure unless justified |
+| Durable/background workflows | ADOPT / INTEGRATE | Inngest | Jous workflow commands, idempotency/economic semantics | Async workflow phase | EVALUATE | Undecided | Evaluate mature orchestration when durable background work is required |
+| Commodity usage metering | ADOPT / INTEGRATE | OpenMeter / Kong | Jous Ledger, attribution, provider/effective cost, charges, savings, rewards, completion economics, reconciliation | Usage/economics phase | EVALUATE | Undecided | External metering may count usage but cannot become the canonical economic ledger |
+| Payments/payment collection | INTEGRATE | Stripe | Jous charges, rewards, ledger and economic calculations | Funding phase | EVALUATE | Undecided pending gate review | Processor handles payment rails; Jous remains economic authority |
+| AI gateway/provider plumbing | ADOPT / INTEGRATE | Portkey / LiteLLM; approved supply-adapter strategy | Jous Model Registry, SupplyAdapter, economic routing and supplier economics | Supply/execution phase | EVALUATE | Continue existing evaluation | Gateway plumbing is commodity and must remain below Jous-owned routing/economic boundaries |
+| Transactional email | INTEGRATE | Established provider | Jous notification policy, templates and domain events | Onboarding/notification phase | EVALUATE | Undecided | Evaluate a maintained provider rather than custom mail infrastructure |
+
+### Explicit authority boundaries
+
+**Supabase Auth.** Supabase Auth may establish user identity, credentials, sessions, and authentication lifecycle. Jous remains authoritative for organization/workspace/project membership, economic authority, budgets, agent permissions, model/provider policy, and other Jous domain authorization.
+
+**Metering.** A commodity metering system may count usage. It must not become the canonical Jous economic ledger. Jous owns attribution, provider cost, effective cost, customer charge, savings, rewards, retries/completion economics, and reconciliation semantics.
+
+**UI.** shadcn/ui, TanStack Table, and Recharts may supply commodity visual primitives. Jous owns its design system, Project Economics experience, Spend Intelligence visualizations, Jous Auto UX, economic explanations, and other differentiated product behavior.
+
+### Dependency-record rule
+
+docs/DEPENDENCIES.md records dependencies actually introduced into the implementation. Speculative candidates in this matrix must not be added there. When a candidate reaches its MVP phase, perform a lightweight evaluation before adoption and record the decision and required license/security/maintenance/lock-in/data-boundary evidence.
+
 
 
 \---
