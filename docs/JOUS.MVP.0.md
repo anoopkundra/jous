@@ -558,6 +558,62 @@ Engineering effort should concentrate on Jous's differentiated IP:
 
 Commodity infrastructure should remain replaceable.
 
+## JOUS.OSS.1 — Commodity Infrastructure Reuse & Build-vs-Adopt Policy
+
+Canonical engineering rule:
+
+> **Don't rebuild commodity infrastructure. Build Jous IP.**
+
+For every new capability, engineering must ask:
+
+1. Is this differentiated Jous IP?
+2. If not, does a mature OSS or managed solution already solve it?
+3. Can it be adopted without compromising Jous's domain boundaries, economics, security, portability, or customer-data boundaries?
+4. If yes, prefer **ADOPT** or **INTEGRATE** over **BUILD**.
+
+This rule does not authorize dependency adoption. A candidate is evaluated only when its corresponding MVP phase requires the capability. Do not refactor working code merely to adopt a third-party component, and do not add a dependency simply because it appears in the candidate matrix.
+
+Existing approved Jous domain boundaries remain authoritative. Commodity infrastructure must remain replaceable behind Jous-owned boundaries, and Jous domain/business logic must not migrate into third-party products. Before adoption, every dependency requires license, security, maintenance, lock-in, and data-boundary review.
+
+Jous must build and own its differentiated economic control plane, including the Jous Ledger, Spend Intelligence, Project Economics, Effective-Cost Engine, Economic Routing, Customer Economic Profile, Rewards Engine, economic decisions and receipts, supplier economics, completion/outcome economics, and Jous-specific policy/economic semantics.
+
+### Component-selection matrix
+
+EVALUATE means candidate only; it is not approval to install, integrate, configure, or refactor around the component. An existing authoritative Jous decision may establish a different status.
+
+| Capability | Classification | Candidate | Jous-owned boundary | MVP timing | Evaluation status | Decision | Rationale |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Authentication/session management | INTEGRATE | Supabase Auth | Jous identity adapter; organization/workspace/project membership and domain authorization | Identity/auth phase | APPROVED BY EXISTING CORE.1A DECISION | Use behind replaceable auth boundary | Existing CORE.1A decision approves Supabase Auth while keeping Jous authorization authoritative |
+| PostgreSQL/database | ADOPT | Existing Supabase/Postgres | Jous schemas, migrations, domain model, ledger/economic semantics | Foundation | APPROVED / EXISTING | Continue existing managed PostgreSQL | Existing architecture already uses PostgreSQL while avoiding unnecessary Supabase-specific domain semantics |
+| Tenant data enforcement | ADOPT / INTEGRATE | Postgres/Supabase RLS | Jous authorization policy and tenant/domain authority | Security/RLS phase | APPROVED IN EXISTING CORE.1A ARCHITECTURE | Use as defense in depth | RLS enforces data isolation; it does not replace Jous product authorization |
+| UI primitives | ADOPT | shadcn/ui | Jous design system and product behavior | Workspace/UI phase | EVALUATE | Undecided | Avoid rebuilding commodity primitives without outsourcing Jous UX |
+| Chat Workspace patterns | ADOPT selectively | shadcn chatbot/template patterns | Jous Workspace behavior, Project Context UX, Jous Auto UX and economic explanations | Workspace/UI phase | EVALUATE | Undecided | Reuse commodity chat/message/composer patterns without outsourcing the Jous product experience |
+| Streaming AI interaction | ADOPT | Vercel AI SDK | Jous execution policy, context, economic decision and Workspace semantics | Workspace/UI phase | EVALUATE / EXISTING MVP CANDIDATE | Evaluate at USE.1 | Reuse streaming/provider interaction plumbing while keeping Jous Workspace proprietary |
+| Tables | ADOPT | TanStack Table | Jous Spend Intelligence/Project Economics semantics and interactions | Spend UI phase | EVALUATE | Undecided | Commodity table behavior can remain below Jous-owned economic experience |
+| Charts | ADOPT | Recharts | Jous visual language, metrics, explanations, economic semantics | Spend UI phase | EVALUATE | Undecided | Chart rendering is commodity; Jous owns what is measured and explained |
+| Application/object storage | INTEGRATE | Supabase Storage initially; Cloudflare R2 where appropriate | Jous object metadata, authorization, retention/data policy | File/context phase | EVALUATE | Undecided | Keep storage provider replaceable and data boundaries explicit |
+| Bot protection | INTEGRATE | Cloudflare Turnstile | Jous access/onboarding policy | Public exposure phase | EVALUATE | Undecided | Commodity abuse control should not become domain authority |
+| Error/performance monitoring | INTEGRATE | Sentry | Jous telemetry policy and sensitive-data boundaries | Operational hardening | EVALUATE | Undecided | Prefer mature observability while controlling data exposure |
+| Product analytics/feature flags | INTEGRATE | PostHog | Jous event semantics, consent/data policy, rollout authority | Beta/product analytics phase | EVALUATE | Undecided | Avoid custom analytics/flag infrastructure unless justified |
+| Durable/background workflows | ADOPT / INTEGRATE | Inngest | Jous workflow commands, idempotency/economic semantics | Async workflow phase | EVALUATE | Undecided | Evaluate mature orchestration when durable background work is required |
+| Commodity usage metering | ADOPT / INTEGRATE | OpenMeter / Kong | Jous Ledger, attribution, provider/effective cost, charges, savings, rewards, completion economics, reconciliation | Usage/economics phase | EVALUATE | Undecided | External metering may count usage but cannot become the canonical economic ledger |
+| Payments/payment collection | INTEGRATE | Stripe | Jous charges, rewards, ledger and economic calculations | Funding phase | EVALUATE | Undecided pending gate review | Processor handles payment rails; Jous remains economic authority |
+| AI gateway/provider plumbing | ADOPT / INTEGRATE | Portkey / LiteLLM; approved supply-adapter strategy | Jous Model Registry, SupplyAdapter, economic routing and supplier economics | Supply/execution phase | EVALUATE | Continue existing evaluation | Gateway plumbing is commodity and must remain below Jous-owned routing/economic boundaries |
+| Transactional email | INTEGRATE | Established provider | Jous notification policy, templates and domain events | Onboarding/notification phase | EVALUATE | Undecided | Evaluate a maintained provider rather than custom mail infrastructure |
+
+### Explicit authority boundaries
+
+**Supabase Auth.** Supabase Auth may establish user identity, credentials, sessions, and authentication lifecycle. Jous remains authoritative for organization/workspace/project membership, economic authority, budgets, agent permissions, model/provider policy, and other Jous domain authorization.
+
+**Metering.** A commodity metering system may count usage. It must not become the canonical Jous economic ledger. Jous owns attribution, provider cost, effective cost, customer charge, savings, rewards, retries/completion economics, and reconciliation semantics.
+
+**UI.** shadcn/ui, shadcn chatbot/template patterns, Vercel AI SDK, TanStack Table, and Recharts may supply commodity UI, chat, streaming, and visual primitives. Jous owns its design system, Project Economics experience, Spend Intelligence visualizations, Jous Auto UX, economic explanations, and other differentiated product behavior.
+
+### Dependency-record rule
+
+docs/DEPENDENCIES.md records dependencies actually introduced into the implementation. Speculative candidates in this matrix must not be added there. When a candidate reaches its MVP phase, perform a lightweight evaluation before adoption and record the decision and required license/security/maintenance/lock-in/data-boundary evidence.
+
+
 
 
 \---
@@ -4314,3 +4370,192 @@ The goal is to create the smallest trustworthy foundation on which the Jous econ
 
 \# END — JOUS.MVP.0 v2
 
+
+
+
+
+---
+
+# 52. 2026-10-18 MVP Product Clarification — Credible Work Economics
+
+This clarification is additive to JOUS.MVP.0 and does not reopen frozen CORE.1A implementation increments.
+
+## 52.1 Canonical MVP outcome
+
+Jous must optimize the economics of **credible completed work**, not merely the price of tokens or the cheapest available model route.
+
+A lower-priced route is not economically better when loss of project context, retries, escalation, rework, or an unusable result causes a higher effective task cost.
+
+Canonical principle:
+
+> **The economic unit Jous should optimize is the credible completed task, not the token.**
+
+The MVP customer loop is therefore:
+
+**Project → Persistent Context → Task → Context Requirement → Context Package → Logical Model → Supplier Route → Execution → Credible Result → Usage/Economic Evidence → Project Economics**
+
+The existing ordering remains authoritative: Project/customer policy and context requirements are resolved before logical-model and supplier economic optimization.
+
+## 52.2 Project continuity is an MVP requirement
+
+Project Context / Project Memory is not an optional convenience layer. It is required to preserve credible work when Jous routes successive tasks across different logical models or suppliers that do not share native conversational memory.
+
+The MVP must demonstrate that a project can accumulate authoritative decisions, constraints, artifacts and current state; a later task can be routed to a different eligible model/supplier; Jous can assemble the relevant provenance-aware context without requiring the customer to restate the project; and the resulting work remains consistent with the project's authoritative context.
+
+Jous must preserve the distinction between source context, derived context and provider-native memory. Provider-native memory may be used behind replaceable adapters, but it must not become the authoritative Project Context boundary.
+
+## 52.3 Credible-work economics
+
+Spend Intelligence and Project Economics should progressively account for the economics of successful work, including where measurable:
+
+- inference and supplier cost;
+- context assembly and context-delivery cost;
+- funding/gateway overhead;
+- retries and fallback;
+- model escalation;
+- failed or rejected outputs;
+- rework attributable to insufficient context;
+- and reusable-context loss or reconstruction cost.
+
+The MVP does not require a universal automated quality score. It does require enough evidence to distinguish raw execution cost from the effective cost of obtaining an accepted/credible result.
+
+## 52.4 Model selection and supplier selection remain separate
+
+Jous first determines an eligible logical model or model stack using task, capability, customer policy and context requirements. It then chooses an eligible supplier route using economic and operational evidence.
+
+A supplier route must never silently change or discard required Project Context merely because it is cheaper.
+
+## 52.5 MVP demonstration acceptance criterion
+
+A canonical MVP demonstration should show:
+
+1. a customer authenticates and opens a Project;
+2. the Project contains persistent authoritative context;
+3. one model performs work using that context;
+4. a later task is routed to a different eligible model and/or supplier;
+5. Jous automatically assembles the relevant Project Context for that task;
+6. the second model produces work consistent with the project's retained decisions and constraints;
+7. Jous records the logical model, supplier route, context usage, inference usage and economic evidence;
+8. Project Economics shows the effective cost of the work and a defensible comparison/saving where available.
+
+A demo that only routes a prompt to the cheapest API without preserving project continuity does **not** satisfy the Jous MVP thesis.
+
+## 52.6 Authentication decision
+
+For MVP, Jous will **INTEGRATE Supabase Auth** for commodity identity and login management rather than build a proprietary authentication system.
+
+Supabase Auth may own authentication concerns such as signup/login, session/token management, email verification, password reset and supported OAuth flows.
+
+Jous remains authoritative for application authorization and economic access, including Organizations, memberships/roles, Projects, wallets/balances, ledger authority, rewards, provider credentials and economic permissions. Authentication metadata must not become the financial or authorization source of truth.
+
+## 52.7 Supply benchmark interpretation
+
+The tested supplier/gateway set includes Hugging Face, Vercel AI Gateway and OpenRouter. The current benchmark evidence remains governed by JOUS.SUPPLY.1:
+
+- Hugging Face is the preferred initial economic/open-model supply candidate based on observed benchmark economics, including no observed Hugging Face funding/platform surcharge on the tested credit purchase;
+- Vercel AI Gateway is a strong managed routing/resilience route;
+- OpenRouter is a strong broad marketplace/fallback/market-intelligence route, with observed funding overhead included in JEAC;
+- all remain replaceable supply routes, not owners of Project Context or the Jous customer relationship.
+
+This supplier ordering is evidence-driven and revalidatable, not a permanent exclusivity decision.
+
+
+
+---
+
+# 53. 2026-10-23 MVP Roadmap Clarification — Workspace Acceleration, Economic Routing and Routing R&D
+
+This clarification is additive. It does not renumber, replace, or reopen the approved implementation gates in Sections 51–62, and it does not reopen frozen CORE.1A work.
+
+## 53.1 Product-capability roadmap
+
+The MVP capability progression should be understood as:
+
+**CORE Foundation → Economic Foundation → Context Foundation → Supply & Execution → Workspace MVP → Outcome Evidence → Jous API/Economic Execution → Economic Intelligence → Beta**
+
+This product-capability view does not create new implementation gates. The existing gate sequence remains authoritative.
+
+In particular, **Jous Auto V1 belongs inside JOUS.USE.1**, and outcome evidence is accumulated across USE.1, SPEND.1 and ROUTE.1 rather than requiring a new standalone gate at this time.
+
+## 53.2 Workspace build-vs-adopt boundary
+
+Jous must BUILD the differentiated Jous Workspace experience, including Projects, Project Context experience, execution-policy controls, Jous Auto, Model Stack, Pinned Model, usage/economic visibility, Spend Intelligence and Project Economics interactions.
+
+Before rebuilding commodity chat infrastructure, the Workspace gate should evaluate commercially permissive reusable components, including:
+
+- shadcn/ui primitives;
+- shadcn chatbot/template patterns where suitable;
+- Vercel AI SDK for streaming and AI interaction plumbing;
+- commodity message/composer, Markdown/code, tool-rendering, loading/error, form, table and chart primitives where they satisfy Jous requirements.
+
+Adoption of these components does not transfer product authority. Jous owns Workspace behavior, Project Context semantics, economic explanations, execution policy and customer economic experience.
+
+Candidate status is not dependency approval. Exact components and versions must pass the dependency-admission process when the corresponding implementation gate requires them.
+
+## 53.3 Jous Auto V1
+
+Jous Auto V1 should be deterministic, versioned, auditable and explainable before Jous attempts proprietary learned routing.
+
+Its decision ordering remains subordinate to JOUS.CONTEXT.1 and JOUS.SUPPLY.1:
+
+**Task → Project/Customer Policy → Context Requirement → Context Package → Capability Requirement → Eligible Logical Models → Eligible Supplier Routes → Jous Economic Evaluation → RouteDecision / permitted execution → Supplier Execution**
+
+Jous Auto V1 may use approved evidence such as capability, context-window requirements, customer/project policy, commercial eligibility, supplier availability, provider pricing, gateway/funding overhead, reliability, retry/fallback economics and other approved JEAC inputs.
+
+A gateway may execute delegated mechanical behavior such as transport selection, retry, failover, load balancing or health-based exclusion within Jous policy. It must not silently replace or reinterpret Jous-owned economic or execution-policy authority.
+
+This clarification does not introduce a new canonical domain entity. Existing RouteDecision and other approved domain vocabulary remain authoritative unless separately amended.
+
+## 53.4 Outcome evidence
+
+Jous should progressively capture evidence needed to evaluate the economics of credible completed work, including where available:
+
+- project and workload/task class;
+- context requirement and context supplied;
+- logical model and supplier/provider route;
+- inference, context, gateway and funding economics;
+- latency;
+- retries, fallback and escalation;
+- execution success/failure;
+- validation or acceptance evidence;
+- completion grouping;
+- rework where measurable;
+- and effective completion cost.
+
+Outcome evidence is cross-cutting evidence for Spend Intelligence, Project Economics and later economic intelligence. It does not require a universal automated quality score.
+
+## 53.5 Routing R&D boundary
+
+Routing research is non-authoritative until explicitly promoted through an approved production gate.
+
+Candidate research systems may include RouteLLM, UIUC LLMRouter, vLLM Semantic Router, LeanCTX, Future AGI or later routing/evaluation projects.
+
+The research progression is:
+
+**Routing R&D → candidate policies/signals → offline validation → shadow evaluation where approved → explicit production approval**
+
+Research systems may generate evidence or candidate policies. They must not directly become the production economic router, alter customer economic authority, or silently override Jous decisions.
+
+Canonical rule:
+
+> **Commodity routing infrastructure executes routes. Routing research generates evidence. Jous owns the economic decision.**
+
+## 53.6 Classification extension
+
+In addition to BUILD, ADOPT, INTEGRATE and DEFER, Jous uses:
+
+### RESEARCH
+
+A component or technique may be studied, benchmarked or used in isolated R&D but is neither an approved production dependency nor production authority.
+
+Moving from RESEARCH to production requires the same explicit architecture, dependency, security, license, data-boundary and implementation approval applicable to other production components.
+
+## 53.7 Relationship to JOUS.INTELLIGENCE.1
+
+JOUS.INTELLIGENCE.1 remains the production gate for proprietary effective-cost intelligence after sufficient evidence exists.
+
+The intended evolution is:
+
+**deterministic Jous Auto V1 → accumulated outcome/economic evidence → routing R&D → offline/shadow candidate intelligence → explicit approval → production Jous intelligence**
+
+This preserves the existing MVP non-goal against proprietary frontier-model routing before sufficient evidence exists.
