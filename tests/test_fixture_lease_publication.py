@@ -627,7 +627,7 @@ class PublicationTests(unittest.TestCase):
         def git(*args): return subprocess.check_output(['git', *args], cwd=ROOT).decode().strip()
         self.assertEqual(git('diff', '--name-only'), '')
         self.assertEqual(git('diff', '--cached', '--name-only'), '')
-        additions = {'services/api/infrastructure/fixture_lease_publication.py', 'tests/test_fixture_lease_publication.py'}
+        additions = {'services/api/infrastructure/fixture_lease_publication.py', 'tests/test_fixture_lease_publication.py', 'services/api/infrastructure/fixture_lease_completion.py', 'tests/test_fixture_lease_completion.py'}
         original = [v for v in git('ls-files', '--others', '--exclude-standard').splitlines() if v not in additions]
         digest = hashlib.sha256('\n'.join(v+' '+hashlib.sha256((ROOT/v).read_bytes()).hexdigest()
                                         for v in original).encode()).hexdigest()
