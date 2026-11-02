@@ -1,14 +1,19 @@
 # JOUS.CORE.1A fixture provisioning lease bootstrap amendment
 
-Status: OFFLINE NORMATIVE CANDIDATE FOR INDEPENDENT REVIEW. This amendment is
-not effective operational authority until independently approved and adopted.
+Status: COMMITTED OFFLINE NORMATIVE CANDIDATE — NOT OPERATIONALLY ADOPTED.
+Independent approval/adoption for operational use is NOT ESTABLISHED. This
+amendment is not effective operational authority until independently approved and adopted.
+Repository publication/commitment does NOT constitute independent approval,
+operational adoption, register authority, reservation authority, managed-access
+authority, fixture provisioning authority, canary authority, deployment authority,
+or runtime activation authority.
 It authorizes no register implementation, reservation, credential work, managed
 access, auth/database fixture provisioning, canary, deployment or activation.
 All fixture identities here are symbolic; no actual UUIDs or issuer/subjects.
 
 ## 1. Exact parent authority and narrow effect
 
-Baseline HEAD/origin/main: `bb8bc7281065bfb591f242d4a128e7ec8dd1b640`;
+HISTORICAL DERIVATION BASELINE (then HEAD/origin/main): `bb8bc7281065bfb591f242d4a128e7ec8dd1b640`;
 tree: `b65715928682fca4aebde887fb4fa60b8f6a7b88`.
 
 This additive amendment amends ONLY the operation-dependent reservation-binding

@@ -1,6 +1,9 @@
 # JOUS.CORE.1A Step 7 runtime canary fixture provisioning contract
 
-Status: OFFLINE CANDIDATE FOR INDEPENDENT REVIEW. This document grants no managed
+Status: COMMITTED OFFLINE CANDIDATE — NOT OPERATIONALLY ADOPTED.
+Independent approval/adoption for operational use is NOT ESTABLISHED.
+Repository publication/commitment of either document does not establish independent
+approval or operational adoption. This document grants no managed
 access or mutation authority. Fixtures are NOT provisioned by this task; the lease
 is NOT implemented or reserved; runtime credentials are NOT provisioned; no managed
 evidence is collected; canary execution is NOT authorized; runtime is NOT activated.
@@ -9,7 +12,7 @@ credentials, customer data or production-derived fixture values are supplied.
 
 ## 1. Source authority and boundaries
 
-Committed baseline: HEAD/origin/main
+HISTORICAL DERIVATION BASELINE (then committed HEAD/origin/main):
 `bb8bc7281065bfb591f242d4a128e7ec8dd1b640`, tree
 `b65715928682fca4aebde887fb4fa60b8f6a7b88`.
 Published plan: `docs/decisions/JOUS.CORE.1A.runtime-canary-fixture-plan.md`, blob
@@ -21,13 +24,13 @@ remain authoritative and unchanged.
 Initial FIXTURE_PROVISIONING lease/bootstrap behavior additionally requires the
 operation-specific refinement in
 `docs/decisions/JOUS.CORE.1A.runtime-canary-fixture-provisioning-bootstrap-amendment.md`:
-independently approved amendment candidate, 15708 bytes, SHA256
-`2aec6ebeddd4267548981a76d017cd2001417bad33804a246ed6264646d64ef3`, prospective blob
-`1713898695d32b04ccd26833b68e94fa4a1c0545`. It is not yet published/committed.
+committed amendment candidate (historical identity: 15708 bytes, SHA256
+`2aec6ebeddd4267548981a76d017cd2001417bad33804a246ed6264646d64ef3`), committed blob
+`1713898695d32b04ccd26833b68e94fa4a1c0545`.
 The amendment and this reconciled contract must be independently approved and
 adopted together before operational use; this candidate grants no such authority.
 
-Derivation sources at this commit:
+Derivation sources at the historical baseline:
 
 - `services/api/migrations/versions/0001_identity_project.py`: actual table DDL,
   defaults, primary/foreign keys, constraints and indexes. It is inspected only.
