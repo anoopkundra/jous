@@ -1,0 +1,10 @@
+# Offline source candidate only. No installation/adoption/certification authority.
+# Python >=3.12,<3.13; exact artifacts/build hashes require independent review.
+# PostgreSQL explicit writer sessions and fixed restricted-function invocation.
+psycopg==3.2.6
+# Qualified low-level AWS transport/signing/protocol build; no default client chain.
+botocore==1.37.18
+# RFC3161 DER, CMS SignedData, ESS and X.509 structure parsing.
+asn1crypto==1.5.1
+# RSA-PSS/SHA256 exact receipt verification; CMS and certificate mathematics.
+cryptography==50.0.2
