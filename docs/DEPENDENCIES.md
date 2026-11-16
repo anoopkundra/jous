@@ -138,3 +138,61 @@ distributions can include libffi (MIT). Their upstream license texts were review
 native-component notices for any future distribution and repeat the existing
 distribution compliance review before customer-possession software is shipped.
 No shared signing secret, service-role credential or private signing key is needed.
+
+
+## V1.1 product candidate dependencies
+
+This unstaged product candidate uses the existing Node 22.22.0 / npm 10.9.4,
+React/React DOM 19.3.0 and TypeScript 7.0.2. Next.js is exactly 16.4.6, an
+owner-approved security update from historical 16.3.8 for GHSA-2464-fhr4-w9xw,
+GHSA-673q-mjm6-r5xr and GHSA-p3m5-59mp-jv5r. No `audit fix` was used.
+The lockfile records resolved registry artifacts and integrity hashes.
+
+| Direct package | Exact version | License | Purpose |
+| --- | --- | --- | --- |
+| @supabase/supabase-js | 2.119.0 | MIT | Supported browser authentication |
+| @supabase/ssr | 0.12.7 | MIT | Cookie-based browser/SSR sessions |
+| @radix-ui/react-slot | 1.5.0 | MIT | Button composition only |
+| class-variance-authority | 0.7.1 | Apache-2.0 | Button variants |
+| clsx | 2.1.1 | MIT | Class construction |
+| tailwind-merge | 3.7.0 | MIT | Utility class merging |
+| tailwindcss | 4.3.5 | MIT | Build-time styles |
+| @tailwindcss/postcss | 4.3.5 | MIT | Build integration |
+| postcss | 8.5.33 | MIT | CSS processing |
+| @playwright/test | 1.65.1 | Apache-2.0 | Focused loopback browser tests |
+
+Supabase JS requires Node >=22; SSR's JS peer range includes 2.119.0. Slot's
+React peer range includes React 19. Browser binaries are not repository artifacts;
+the focused test configuration uses the installed Microsoft Edge channel.
+No Python dependency, AI SDK, inference provider, icon/animation/form framework
+or full Radix bundle is added. Preserve all installed upstream LICENSE/NOTICE
+files in later distribution; package adoption does not license Jous source.
+
+Button, Input, Textarea and Card are local adaptations of shadcn/ui's
+new-york-v4 primitive patterns, with Jous styles, local utility imports and a
+narrow Slot import. They do not vendor a gateway or chat application.
+Source: https://github.com/shadcn-ui/ui/tree/main/apps/v4/registry/new-york-v4/ui
+
+Upstream shadcn/ui notice for these adaptations:
+
+MIT License
+
+Copyright (c) 2023 shadcn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

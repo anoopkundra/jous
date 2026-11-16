@@ -1,0 +1,7 @@
+@import "tailwindcss";
+:root { color-scheme: light; }
+body { margin: 0; background: #f8fafb; color: #17212e; font-family: Arial, Helvetica, sans-serif; -webkit-font-smoothing: antialiased; }
+label { display: block; margin-bottom: .5rem; font-size: .875rem; font-weight: 600; color: #334155; }
+.brand { font-size: 1.8rem; font-weight: 800; letter-spacing: -.09em; color: #142b32; text-decoration: none; }
+.brand span { color: #13766e; }
+.eyebrow { font-size: .7rem; letter-spacing: .16em; font-weight: 700; color: #0f766e; }

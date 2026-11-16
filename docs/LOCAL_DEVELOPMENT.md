@@ -360,3 +360,82 @@ python tests/validate_managed_runtime_security.py --opt-in-managed-validation --
 Cleanup-only needs the admin configuration, not a functioning runtime credential.
 Retain manifest until baseline/revision verification succeeds. No unresolved cleanup
 or skipped managed isolation evidence can pass the PUBLIC CRUD SECURITY GATE.
+
+
+## V1.1 product candidate
+
+V1.1 adds only approved-user sign-in, project list/create/read and a workspace
+shell. Inference, tasks, pricing, ledger, savings and rewards are not enabled.
+It creates no migration and leaves the foundation app/security modules unchanged.
+
+Run the additive product factory (with the existing approved backend environment):
+
+```powershell
+$env:PYTHONPATH = "services/api/src"
+.\.venv\Scripts\python.exe -m uvicorn jous_api.product_app:create_product_app --factory --host 127.0.0.1 --port 8000
+```
+
+This command is runtime activity: use it with a real database/Supabase account
+only at a separately authorized acceptance gate. Startup uses the existing
+restricted runtime safety checks; never substitute admin/migration credentials.
+A valid Supabase identity must already map to an active internal User with exactly
+one active eligible organization membership. Zero/multiple memberships deny;
+there is no signup or provisioning workflow.
+
+Frontend environment variable names (see apps/web/.env.example):
+
+- NEXT_PUBLIC_SUPABASE_URL
+- NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+- JOUS_API_INTERNAL_ORIGIN
+- JOUS_APP_ORIGIN
+
+The first two are public configuration. The latter two are server-only origins.
+No service-role/database/migration/provider key belongs in frontend configuration.
+Use an explicit writable temporary npm cache outside the repository on this
+Windows checkout. Do not change user/global npm config or PowerShell policy.
+
+```powershell
+npm.cmd --cache "<approved-temporary-cache>" run dev:web
+npm.cmd --cache "<approved-temporary-cache>" run build:web
+npm.cmd --cache "<approved-temporary-cache>" run test:v1.1 --workspace=@jous/web
+```
+
+The browser uses same-origin /api/*; a restricted Next.js handler forwards only
+approved methods/paths and its verified session bearer to the configured FastAPI
+origin. It strips client authority/tenant headers and cookies. Product POSTs need
+the exact application Origin and JSON. No failed write is automatically replayed.
+Host-only SDK session cookies use SameSite=Lax and Secure in production; browser
+SDK cookies are JavaScript-readable. Authenticated responses are not shared-cacheable.
+Logout clears the browser session but does not promise immediate revocation of
+already-issued access JWTs. Tokens, credentials and project contents must not be logged.
+
+Focused backend tests (no database/network):
+
+```powershell
+$env:PYTHONPATH = "services/api/src;tests"
+$env:PYTHONDONTWRITEBYTECODE = "1"
+.\.venv\Scripts\python.exe -B -m unittest test_project_service test_product_api -v
+```
+
+The Playwright suite owns loopback-only synthetic Auth/API servers and a Next.js
+development server. It does not certify real Supabase, PostgreSQL/RLS or deployment.
+Reports go to the OS temporary directory. Playwright owns startup and teardown;
+do not use privileged process inspection. Next dev may generate apps/web/AGENTS.md
+and development next-env.d.ts imports; these are toolchain changes, not product
+source. The reviewed candidate excludes the generated AGENTS file and keeps the
+canonical production-build type declarations after the final build.
+
+Before real V1.1 acceptance, separately authorize configuration and restricted
+DB use, verify the controlled user's existing identity/membership, then prove
+create/list/reopen and cross-organization denial against the actual database.
+No inference-provider or authority-provider adoption is part of that acceptance.
+
+V1.1 auth availability: Supabase auth transports (including JWKS, refresh,
+sign-in and sign-out) use a 4-second application deadline and abort their
+network request, including response acquisition. Server auth operations also
+have a 4-second scope. Auth transport errors are fail-closed and not retried.
+The restricted API skips Proxy refresh and owns an 8-second total budget from
+token acquisition through FastAPI response acquisition; it never replays writes.
+Page Proxy refresh and page authorization are separately bounded; a page may
+traverse more than one auth scope. A valid external session with unavailable
+Jous access shows generic recovery with sign-out, not an identity-specific reason.

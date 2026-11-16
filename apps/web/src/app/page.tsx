@@ -1,8 +1,9 @@
-export default function Home() {
-  return (
-    <main>
-      <h1>Jous</h1>
-      <p>Application foundation. Product features are not enabled.</p>
-    </main>
-  );
+import { redirect } from "next/navigation";
+import { accessToken } from "@/lib/supabase/server";
+import { AccessUnavailable } from "@/components/session-controls";
+export const dynamic = "force-dynamic";
+export default async function Home() {
+  let token: string | null;
+  try { token = await accessToken(); } catch { return <AccessUnavailable />; }
+  redirect(token ? "/projects" : "/login");
 }
