@@ -9,11 +9,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from . import step7_catalog
-from .config import Settings
+from .config import MigrationSettings, Settings
 from .database_context import DatabaseContext
 from .runtime_policy import verify_runtime_policy_authority
 from .runtime_resolution import catalog_resolution
-from . import runtime_transport, step7_execution_contract
+from . import migration_transport, runtime_transport, step7_execution_contract
 
 
 class DatabaseUnavailable(RuntimeError):
@@ -80,10 +80,7 @@ async def runtime_temp_evidence(connection):
 
 BASELINE_CHECK = """SELECT COALESCE(pg_catalog.current_setting('jous.user_id',true),'') = ''
  AND COALESCE(pg_catalog.current_setting('jous.organization_id',true),'') = ''"""
-STATE_CHECK = """SELECT
- (SELECT count(*) FROM public.alembic_version WHERE version_num='0002_runtime_rls') = 1
- AND (SELECT count(*) FROM public.alembic_version) = 1
- AND (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+FOUNDATION_OBJECT_CHECK = """(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname='public' AND c.relname IN ('users','organizations','organization_memberships','projects')
        AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity) = 4
  AND (SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
@@ -102,11 +99,24 @@ STATE_CHECK = """SELECT
      WHERE n.nspname='jous_security' AND a.grantee=0)"""
 
 
+STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0002_runtime_rls') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
+PRODUCT_STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0004_product_acl_hardening') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
+
+
 async def validate_runtime(connection, *, state=True):
+    return await _validate_foundation(connection, state=state)
+
+
+async def validate_product_foundation(connection):
+    # All foundation object/role/grant/Step 7 checks remain mandatory.
+    return await _validate_foundation(connection, product=True)
+
+
+async def _validate_foundation(connection, *, state=True, product=False):
     """Catalog/connectivity checks only; never reads domain rows or calls helpers."""
     try:
         async with catalog_resolution(connection):
-            for sql in (ROLE_CHECK, BASELINE_CHECK, STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
+            for sql in (ROLE_CHECK, BASELINE_CHECK, PRODUCT_STATE_CHECK if product else STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
                 if await connection.scalar(text(sql)) is not True:
                     raise DatabaseUnavailable("Unsafe runtime database configuration")
             await runtime_temp_evidence(connection)
@@ -151,12 +161,14 @@ async def validate_runtime(connection, *, state=True):
                     "FROM pg_catalog.pg_roles r WHERE r.rolname='jous_security_reader'"))
                 if helper_safe is not True:
                     raise DatabaseUnavailable("Unsafe runtime database configuration")
+                runtime_relations = ("'users','organizations','organization_memberships','projects','alembic_version','tasks','executions'"
+                                     if product else "'users','organizations','organization_memberships','projects','alembic_version'")
                 unrelated_safe = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
                     "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
                     "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "
                     "WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') AND n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$' "
                     "AND n.nspname <> 'information_schema' AND NOT (n.nspname='public' AND "
-                    "((r.name='jous_runtime' AND c.relname IN ('users','organizations','organization_memberships','projects','alembic_version')) "
+                    f"((r.name='jous_runtime' AND c.relname IN ({runtime_relations})) "
                     "OR (r.name='jous_security_reader' AND c.relname IN ('users','organizations')))) "
                     "AND (pg_catalog.has_any_column_privilege(CAST(r.name AS pg_catalog.name),c.oid,'SELECT,INSERT,UPDATE,REFERENCES') "
                     "OR pg_catalog.has_table_privilege(CAST(r.name AS pg_catalog.name),c.oid,'DELETE,TRUNCATE,TRIGGER'))) "
@@ -169,14 +181,21 @@ async def validate_runtime(connection, *, state=True):
 
 
 class Database:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, validator=None):
+        self._validator = validator
         self._connection_cleanup_tasks = {}
         self.timeout_seconds = settings.database_timeout_seconds
+        self.security_validation_timeout_seconds = settings.database_security_validation_timeout_seconds
         self.engine: AsyncEngine | None = None
         self.session_factory: async_sessionmaker[AsyncSession] | None = None
         if settings.database_url is not None:
             # Deterministic authority/transport gates precede engine construction.
-            if settings.environment == 'production':
+            if isinstance(settings, MigrationSettings):
+                try:
+                    connect_args = migration_transport.connection_arguments(settings)
+                except migration_transport.TransportRejected:
+                    raise DatabaseUnavailable('Migration transport configuration rejected') from None
+            elif settings.environment == 'production':
                 step7_execution_contract.load_final_contract()
                 try:
                     connect_args = runtime_transport.connection_arguments(settings)
@@ -265,18 +284,27 @@ class Database:
         if self.engine is None:
             raise DatabaseUnavailable("Database is not configured")
         try:
-            async with asyncio.timeout(self.timeout_seconds):
-                async with self.engine.connect() as connection:
-                    try:
-                        await validate_runtime(connection)
+            connection = self.engine.connect()
+            try:
+                # AsyncConnection.start() checks out/opens the physical
+                # connection. Keep that acquisition in the existing short
+                # connection/pool domain before starting the longer validator.
+                async with asyncio.timeout(self.timeout_seconds):
+                    await connection.start()
+                try:
+                    async with asyncio.timeout(self.security_validation_timeout_seconds):
+                        await (self._validator or validate_runtime)(connection)
                         if await connection.scalar(text("SELECT 1")) != 1:
                             raise DatabaseUnavailable("Database check failed")
-                    except BaseException as error:
-                        try:
-                            await self.discard_connection(connection)
-                        except DatabaseUnavailable:
-                            error.add_note("Database connection cleanup failed")
-                        raise
+                except BaseException as error:
+                    try:
+                        await self.discard_connection(connection)
+                    except DatabaseUnavailable:
+                        error.add_note("Database connection cleanup failed")
+                    raise
+            finally:
+                if connection.sync_connection is not None:
+                    await connection.__aexit__(None, None, None)
         except TimeoutError:
             raise
         except Exception:
@@ -292,8 +320,8 @@ class Database:
             async with self.session_factory(bind=connection) as session:
                 try:
                     async with session.begin():
-                        async with asyncio.timeout(self.timeout_seconds):
-                            await validate_runtime(session)
+                        async with asyncio.timeout(self.security_validation_timeout_seconds):
+                            await (self._validator or validate_runtime)(session)
                             context = DatabaseContext(session)
                             await context.initialize()
                         session.info["jous_context"] = context

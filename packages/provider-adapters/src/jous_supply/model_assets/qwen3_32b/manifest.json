@@ -1,0 +1,46 @@
+{
+  "manifest_schema_version": 1,
+  "admission_version": "v1.2.offline.1",
+  "upstream_repository": "Qwen/Qwen3-32B",
+  "upstream_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+  "asset_hashes": {
+    "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+  },
+  "retrieval_date": "2026-11-16",
+  "license": "Apache-2.0",
+  "license_source": "Qwen/Qwen3-32B/LICENSE",
+  "logical_model_id": "jous.text.general.v1",
+  "supplier_id": "hugging_face",
+  "supplier_native_model_id": "Qwen/Qwen3-32B:deepinfra",
+  "underlying_provider": "DeepInfra",
+  "template_branch": "system-user-no-tools-nonthinking-v1",
+  "template_renderer_version": 1,
+  "tokenizers_version": "0.22.2",
+  "admitted_context": 32768,
+  "output_allowance": 1024,
+  "safety_margin": 3277,
+  "maximum_input_upper_bound": 28467,
+  "hosted_bound_status": "HOSTED_TOKEN_TEMPLATE_AUTHORITY_UNRESOLVED",
+  "runtime_download": false,
+  "artifacts": [
+    {
+      "upstream_path": "tokenizer.json",
+      "vendored_path": "model_assets/qwen3_32b/tokenizer.json",
+      "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "byte_length": 11422654,
+      "retrieval_date": "2026-11-16",
+      "license": "Apache-2.0"
+    },
+    {
+      "upstream_path": "tokenizer_config.json",
+      "vendored_path": "model_assets/qwen3_32b/tokenizer_config.json",
+      "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+      "byte_length": 9732,
+      "retrieval_date": "2026-11-16",
+      "license": "Apache-2.0"
+    }
+  ],
+  "template_source_sha256": "a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8",
+  "hosted_bound_authority_reference": null
+}

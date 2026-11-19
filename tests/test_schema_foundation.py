@@ -29,10 +29,16 @@ EXPECTED = {
 }
 
 
+def foundation_tables():
+    """Explicit frozen profile; successor coverage asserts the full metadata set."""
+    names = {"public." + name for name in EXPECTED}
+    return {name: Base.metadata.tables[name] for name in names}
+
+
 class SchemaTests(unittest.TestCase):
     def test_exact_tables_columns_and_neutral_boundaries(self):
-        self.assertEqual(set(Base.metadata.tables), {"public." + name for name in EXPECTED})
-        for table in Base.metadata.tables.values():
+        self.assertEqual(set(foundation_tables()), {"public." + name for name in EXPECTED})
+        for table in foundation_tables().values():
             self.assertEqual(set(table.c.keys()), EXPECTED[table.name])
             for column in table.c:
                 for prohibited in ("balance", "spend", "reward", "supplier", "model", "memory",
@@ -40,7 +46,7 @@ class SchemaTests(unittest.TestCase):
                     self.assertNotIn(prohibited, column.name)
 
     def test_uuid_pks_timestamps_and_nullability(self):
-        for table in Base.metadata.tables.values():
+        for table in foundation_tables().values():
             self.assertEqual(table.primary_key.name, "pk_" + table.name)
             self.assertEqual(list(table.primary_key.columns.keys()), ["id"])
             self.assertIsInstance(table.c.id.type, postgresql.UUID)
@@ -59,7 +65,7 @@ class SchemaTests(unittest.TestCase):
             "projects": {("organization_id", "organizations.id")},
             "users": set(), "organizations": set(),
         }
-        for table in Base.metadata.tables.values():
+        for table in foundation_tables().values():
             self.assertEqual({(fk.parent.name, fk.target_fullname) for fk in table.foreign_keys}, expected[table.name])
             for constraint in table.constraints:
                 if isinstance(constraint, ForeignKeyConstraint):
@@ -83,7 +89,7 @@ class SchemaTests(unittest.TestCase):
                             for c in users.constraints))
 
     def test_postgresql_ddl_and_named_constraints(self):
-        for table in Base.metadata.tables.values():
+        for table in foundation_tables().values():
             ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
             self.assertIn("TIMESTAMP WITH TIME ZONE", ddl)
             self.assertIn("UUID", ddl)
@@ -103,8 +109,20 @@ class SchemaTests(unittest.TestCase):
              patch.object(revision.op, 'create_index', side_effect=index), \
              patch.object(revision.op, 'f', side_effect=lambda name: name):
             revision.upgrade()
-        self.assertEqual(set(frozen.tables), set(Base.metadata.tables))
-        for name, actual in Base.metadata.tables.items():
+        self.assertEqual(set(frozen.tables), set(foundation_tables()))
+        historical_metadata = MetaData(schema='public')
+        for table in foundation_tables().values():
+            table.to_metadata(historical_metadata)
+        for name, actual in foundation_tables().items():
+            # Exclude exactly the reviewed additive project key, no other delta.
+            historical = historical_metadata.tables[name]
+            if name == 'public.projects':
+                additions = [c for c in historical.constraints if c.name == 'uq_projects_organization_id_id']
+                self.assertEqual(len(additions), 1)
+                self.assertIsInstance(additions[0], UniqueConstraint)
+                self.assertEqual(tuple(additions[0].columns.keys()), ('organization_id', 'id'))
+                historical.constraints.remove(additions[0])
+            actual = historical
             expected = frozen.tables[name]
             # Column/constraint ordering differs between mixins and frozen revision;
             # order is not a physical schema difference for Alembic.
@@ -120,12 +138,14 @@ class SchemaTests(unittest.TestCase):
 class MigrationTests(unittest.TestCase):
     def test_single_initial_revision_has_upgrade_and_downgrade(self):
         script = ScriptDirectory.from_config(Config(str(INI)))
-        self.assertEqual(script.get_heads(), ["0002_runtime_rls"])
-        revisions = list(script.walk_revisions())
-        self.assertEqual(len(revisions), 2)
-        self.assertIsNone(revisions[-1].down_revision)
-        self.assertTrue(callable(revisions[0].module.upgrade))
-        self.assertTrue(callable(revisions[0].module.downgrade))
+        # Current successor head is asserted separately in test_product_schema.
+        initial = script.get_revision("0001_identity_project")
+        security = script.get_revision("0002_runtime_rls")
+        self.assertIsNone(initial.down_revision)
+        self.assertEqual(security.down_revision, initial.revision)
+        for revision in (initial, security):
+            self.assertTrue(callable(revision.module.upgrade))
+            self.assertTrue(callable(revision.module.downgrade))
 
     def test_offline_migration_sql_is_deterministic_and_bounded(self):
         def render(upgrade):
@@ -155,7 +175,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(config.get_main_option("sqlalchemy.url"))
         output = io.StringIO()
         with patch.dict("os.environ", {"JOUS_DATABASE_URL": "postgresql://private:secret@private-host/jous"}, clear=True):
-            command.upgrade(Config(str(INI), output_buffer=output), "head", sql=True)
+            command.upgrade(Config(str(INI), output_buffer=output), "0002_runtime_rls", sql=True)
         self.assertNotIn("secret", output.getvalue())
         self.assertNotIn("private-host", output.getvalue())
 
@@ -169,3 +189,12 @@ class MigrationTests(unittest.TestCase):
             spec = importlib.util.spec_from_file_location("offline_migration_environment", path)
             spec.loader.exec_module(importlib.util.module_from_spec(spec))
             connect.assert_not_called()
+
+
+class FrozenHistoryTests(unittest.TestCase):
+    def test_historical_migration_sources_are_byte_identical_to_predecessor(self):
+        for name in ('0001_identity_project.py', '0002_runtime_rls.py'):
+            relative = 'services/api/migrations/versions/' + name
+            expected = subprocess.check_output(['git','show',
+                'e7df8e0d33d3e14f74d6daccd8b244f56bd4e5a6:' + relative], cwd=ROOT).decode().replace('\r\n','\n')
+            self.assertEqual((ROOT / relative).read_text(), expected)

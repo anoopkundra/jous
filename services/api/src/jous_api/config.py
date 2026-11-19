@@ -22,6 +22,7 @@ class Settings(BaseModel):
     api_port: int = Field(default=8000, ge=1, le=65535)
     database_url: SecretStr | None = Field(default=None, repr=False)
     database_timeout_seconds: float = Field(default=5.0, ge=0.1, le=30, allow_inf_nan=False)
+    database_security_validation_timeout_seconds: float = Field(default=20.0, ge=0.1, le=30, allow_inf_nan=False)
     database_ca_file: str | None = Field(default=None, max_length=1024)
     auth_issuer: str | None = Field(default=None, max_length=255)
     auth_audience: str = "authenticated"
@@ -60,6 +61,10 @@ class Settings(BaseModel):
         return self
 
 
+class MigrationSettings(Settings):
+    """Explicit admin-only settings type; never produced by runtime loading."""
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Explicit mappings make tests independent of the process environment."""
     source = os.environ if environ is None else environ
@@ -71,6 +76,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         "api_port": "JOUS_API_PORT",
         "database_url": "JOUS_DATABASE_URL",
         "database_timeout_seconds": "JOUS_DATABASE_TIMEOUT_SECONDS",
+        "database_security_validation_timeout_seconds": "JOUS_DATABASE_SECURITY_VALIDATION_TIMEOUT_SECONDS",
         "database_ca_file": "JOUS_DATABASE_CA_FILE",
         "auth_issuer": "JOUS_AUTH_ISSUER",
         "auth_audience": "JOUS_AUTH_AUDIENCE",
@@ -86,7 +92,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         raise ConfigurationError("Invalid Jous configuration: " + ", ".join(fields)) from None
 
 
-def load_migration_settings(environ: Mapping[str, str] | None = None) -> Settings:
+def load_migration_settings(environ: Mapping[str, str] | None = None) -> MigrationSettings:
     """Admin tooling only. Runtime settings never ingest this secret; no fallback."""
     source = os.environ if environ is None else environ
     value = source.get("JOUS_MIGRATION_DATABASE_URL")
@@ -94,8 +100,12 @@ def load_migration_settings(environ: Mapping[str, str] | None = None) -> Setting
         raise ConfigurationError("Migrations require JOUS_MIGRATION_DATABASE_URL")
     # Reuse PostgreSQL validation without ingesting runtime/authentication settings.
     try:
-        return load_settings({"JOUS_DATABASE_URL": value,
+        settings = load_settings({"JOUS_DATABASE_URL": value,
             "JOUS_ENVIRONMENT": source.get("JOUS_ENVIRONMENT", "development"),
-            "JOUS_DATABASE_TIMEOUT_SECONDS": source.get("JOUS_DATABASE_TIMEOUT_SECONDS", "5")})
+            "JOUS_DATABASE_TIMEOUT_SECONDS": source.get("JOUS_DATABASE_TIMEOUT_SECONDS", "5"),
+            "JOUS_DATABASE_SECURITY_VALIDATION_TIMEOUT_SECONDS": source.get(
+                "JOUS_DATABASE_SECURITY_VALIDATION_TIMEOUT_SECONDS", "20"),
+            "JOUS_DATABASE_CA_FILE": source.get("JOUS_DATABASE_CA_FILE", "")})
+        return MigrationSettings.model_validate(settings.model_dump())
     except ConfigurationError:
         raise ConfigurationError("Invalid migration configuration") from None

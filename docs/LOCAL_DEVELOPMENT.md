@@ -61,6 +61,7 @@ an active environment. No secrets are required for local process-health checks.
 | JOUS_API_PORT | 8000; integer 1–65535 |
 | JOUS_DATABASE_URL | optional locally; required in production, PostgreSQL URL with host/database |
 | JOUS_DATABASE_TIMEOUT_SECONDS | 5 seconds; finite number from 0.1 to 30 |
+| JOUS_DATABASE_SECURITY_VALIDATION_TIMEOUT_SECONDS | 20 seconds; finite number from 0.1 to 30; bounds mandatory runtime security certification only |
 
 Database configuration is masked and validated syntactically. Settings, imports,
 app creation and startup do not connect; readiness or explicit database work
@@ -439,3 +440,46 @@ token acquisition through FastAPI response acquisition; it never replays writes.
 Page Proxy refresh and page authorization are separately bounded; a page may
 traverse more than one auth scope. A valid external session with unavailable
 Jous access shows generic recovery with sign-out, not an identity-specific reason.
+# V1.2 offline candidate: task/context/execution
+
+The additive product factory remains `jous_api.product_app:create_product_app`.
+It now mandates the product successor validator at readiness and before scoped
+transactions. Default `jous_api.main:create_app` keeps foundation validation.
+Do not start either against a real database without separate runtime authority.
+
+For offline tests use the existing Python 3.12 environment and source paths:
+
+```powershell
+$env:PYTHONPATH = "services/api/src;packages/provider-adapters/src;tests"
+$env:PYTHONDONTWRITEBYTECODE = "1"
+python -B -m unittest test_task_context test_token_budget test_supply_adapter test_execution_service test_task_service test_task_api test_product_schema test_product_runtime_validation
+```
+
+Use the exact reviewed requirements lock and local package declarations when
+preparing an authorized environment. No global installation is required.
+The HF route is unconditionally unavailable for real execution; there is no
+activation variable, credential override, client override or test-result override.
+No provider credential is required by this offline candidate.
+
+Offline browser fixtures own loopback Auth/API/Next processes. Run V1.1 using
+its unchanged Playwright config and V1.2 with `playwright.v1_2.config.ts` from
+`apps/web`, using the approved `npm.cmd` temporary-cache launcher. No real Auth,
+database or supplier service belongs in those fixtures. They use synthetic
+identities/responses, not operational admission evidence. No POST is replayed.
+
+Migration FILE `0003_project_tasks_executions.py` is present but NOT applied.
+Do not run Alembic online or the disposable PostgreSQL tests at this gate.
+`services/api/infrastructure/validate_v1_2_product_schema.py` requires explicit
+future disposable authorization and a dedicated loopback database; it does not
+apply migrations. The integration test module is separately gated and is not
+part of offline discovery. These local/disposable-environment instructions are
+not the managed-target status: managed Jous Supabase Dev later applied 0003 and
+0004 and passed post-migration/runtime acceptance, as recorded in the final
+status addendum in `docs/build-journey/V1.2-task-context-execution.md`.
+
+Before operational adoption: independently review the candidate, separately
+authorize disposable PostgreSQL role/catalog/RLS/cross-tenant certification,
+resolve hosted token/template authority, and admit account executability.
+Managed database acceptance does not establish provider readiness or authorize
+deployment/publication. Mock success proves none of those operational
+prerequisites.

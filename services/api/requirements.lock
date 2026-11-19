@@ -24,3 +24,20 @@ PyJWT[crypto]==2.15.1
 cryptography==50.0.2
 cffi==2.1.1
 pycparser==3.0
+
+# V1.2 reviewed HTTP/tokenizer closure; no optional extras.
+httpx==0.28.1
+httpcore==1.0.9
+certifi==2026.10.23
+tokenizers==0.22.2
+huggingface-hub==0.36.0
+filelock==4.2.1
+fsspec==2026.6.0
+packaging==25.0
+PyYAML==6.0.3
+requests==2.33.0
+tqdm==4.67.1
+charset-normalizer==3.4.4
+urllib3==2.8.0
+colorama==0.4.6; platform_system == "Windows"
+hf-xet==1.2.0; platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "arm64" or platform_machine == "aarch64"

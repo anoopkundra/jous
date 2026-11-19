@@ -15,7 +15,7 @@ from .authentication import RejectingVerifier
 from .auth_adapters.supabase import SupabaseVerifier
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, database_factory=None) -> FastAPI:
     try:
         settings = load_settings() if settings is None else settings
     except ConfigurationError as error:
@@ -26,7 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "request_id": None, "detail": str(error)}), file=sys.stderr)
         raise
     logger = application_logger(settings)
-    database = Database(settings)
+    database = (database_factory or Database)(settings)
     verifier = (SupabaseVerifier(settings.auth_issuer, settings.auth_audience, settings.auth_jwks_url)
                 if settings.auth_issuer else RejectingVerifier())
 

@@ -98,6 +98,66 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TransactionTests(unittest.IsolatedAsyncioTestCase):
+    def scoped_database(self, *, connection_timeout, validation_timeout):
+        database = Database(Settings(environment="test", database_timeout_seconds=connection_timeout,
+                                     database_security_validation_timeout_seconds=validation_timeout))
+        session = MagicMock()
+        session.info = {}
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock()
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        session.begin = MagicMock(return_value=transaction)
+        session_manager = MagicMock()
+        session_manager.__aenter__ = AsyncMock(return_value=session)
+        session_manager.__aexit__ = AsyncMock(return_value=False)
+        database.session_factory = MagicMock(return_value=session_manager)
+        connection = MagicMock()
+        connection.closed = connection.invalidated = False
+        connection_manager = MagicMock()
+        connection_manager.__aenter__ = AsyncMock(return_value=connection)
+        connection_manager.__aexit__ = AsyncMock(return_value=False)
+        database.engine = MagicMock()
+        database.engine.connect.return_value = connection_manager
+        return database, session, transaction, session_manager, connection
+
+    async def test_scoped_validator_has_separate_budget_and_body_is_outside_it(self):
+        database, session, transaction, session_manager, connection = self.scoped_database(
+            connection_timeout=0.1, validation_timeout=0.2)
+        initialize = AsyncMock()
+        async def validator(value):
+            self.assertIs(value, session)
+            await asyncio.sleep(0.12)
+
+        with patch("jous_api.database.validate_runtime", new=validator), \
+             patch("jous_api.database.DatabaseContext.initialize", new=initialize):
+            async with database.scoped_transaction() as yielded:
+                self.assertIs(yielded, session)
+                await asyncio.sleep(0.22)
+        initialize.assert_awaited_once()
+        transaction.__aexit__.assert_awaited_once()
+        session_manager.__aexit__.assert_awaited_once()
+        database.engine.connect.return_value.__aexit__.assert_awaited_once()
+
+    async def test_scoped_validation_timeout_yields_no_application_session(self):
+        database, session, transaction, session_manager, connection = self.scoped_database(
+            connection_timeout=0.1, validation_timeout=0.1)
+        yielded = False
+
+        async def hang(_value):
+            await asyncio.Event().wait()
+
+        with patch("jous_api.database.validate_runtime", new=hang), \
+             patch("jous_api.database.DatabaseContext.initialize", new_callable=AsyncMock) as initialize, \
+             patch.object(database, "discard_connection", new_callable=AsyncMock) as discard:
+            with self.assertRaises(TimeoutError):
+                async with database.scoped_transaction():
+                    yielded = True
+        self.assertFalse(yielded)
+        initialize.assert_not_awaited()
+        discard.assert_awaited_once_with(connection)
+        transaction.__aexit__.assert_awaited_once()
+        session_manager.__aexit__.assert_awaited_once()
+
     async def test_commit_exception_cancellation_and_commit_failure_cleanup(self):
         for failure in (None, RuntimeError, asyncio.CancelledError, "commit"):
             with self.subTest(failure=failure):

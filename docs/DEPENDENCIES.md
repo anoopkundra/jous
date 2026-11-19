@@ -196,3 +196,39 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+# V1.2 offline execution dependency admission (2026-11-16)
+
+The V1.2 candidate adds Python-only transport/local-tokenizer dependencies. No
+frontend dependency changes, provider SDK, Vercel AI SDK, optional extras or
+framework upgrades are required. Runtime asset downloads are prohibited.
+
+| Package | Exact version | License | Purpose |
+| --- | --- | --- | --- |
+| httpx | 0.28.1 | BSD-3-Clause | Supplier-neutral HTTP transport |
+| httpcore | 1.0.9 | BSD-3-Clause | HTTPX transport core |
+| certifi | 2026.10.23 | MPL-2.0 | TLS root bundle; shared with Requests |
+| tokenizers | 0.22.2 | Apache-2.0 | Vendored tokenizer execution |
+| huggingface-hub | 0.36.0 | Apache-2.0 | Tokenizers distribution dependency; not called at runtime |
+| filelock | 4.2.1 | MIT | Hub dependency |
+| fsspec | 2026.6.0 | BSD-3-Clause | Hub dependency |
+| packaging | 25.0 | Apache-2.0 OR BSD-2-Clause | Hub dependency |
+| PyYAML | 6.0.3 | MIT | Hub dependency |
+| requests | 2.33.0 | Apache-2.0 | Hub dependency |
+| tqdm | 4.67.1 | MPL-2.0 AND MIT | Hub dependency |
+| charset-normalizer | 3.4.4 | MIT | Requests dependency |
+| urllib3 | 2.8.0 | MIT | Requests dependency |
+| colorama | 0.4.6 | BSD-3-Clause | tqdm dependency on Windows |
+| hf-xet | 1.2.0 | Apache-2.0 | Hub dependency on its declared machine markers |
+
+Retain AnyIO 4.15.1, IDNA 3.20, h11 0.16.0 and typing_extensions 4.16.0.
+`services/api/requirements.lock` preserves exact upstream platform markers.
+These newly selected versions reported no advisories in exact-version PyPI
+metadata inspected 2026-11-16; that observation is not a perpetual security claim.
+Older transitive candidates with reported advisories were not admitted.
+
+`Tokenizer.from_buffer` consumes hash-checked vendored artifacts. Do not call
+`from_pretrained`, Hub downloads or model-weight APIs. Hub is retained to satisfy
+standard package metadata, rather than creating an incomplete/custom wheel.
+The real HF route remains code-ineligible independent of dependencies/credentials.
+
+See `docs/build-journey/V1.2-task-context-execution.md` for scope and gate history.

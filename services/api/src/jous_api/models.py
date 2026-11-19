@@ -51,6 +51,7 @@ class OrganizationMembership(Record, Base):
 class Project(Record, Base):
     __tablename__ = "projects"
     __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_projects_organization_id_id"),
         Index("ix_projects_organization_id", "organization_id"),
         CheckConstraint("length(btrim(name)) > 0", name="name_nonblank"),
         CheckConstraint("length(btrim(status)) > 0", name="status_nonblank"),
