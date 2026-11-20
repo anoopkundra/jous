@@ -33,7 +33,7 @@ class Connection:
         self.calls += 1
         if self.fail_first and self.calls == 1:
             return False
-        if self.fail_revision and sql == db.ROUTE_ECONOMICS_STATE_CHECK:
+        if self.fail_revision and sql in (db.ROUTE_ECONOMICS_STATE_CHECK, db.USAGE_EVENTS_STATE_CHECK):
             return False
         if 'has_any_column_privilege' in sql:
             match = re.search(r"r.name='jous_runtime' AND c.relname IN \(([^)]*)\)", sql)
@@ -46,13 +46,14 @@ class Connection:
 
 
 class FoundationAllowlistTests(unittest.IsolatedAsyncioTestCase):
-    async def run_foundation(self, successor, names, fail_first=False, fail_revision=False):
+    async def run_foundation(self, successor, names, fail_first=False, fail_revision=False, usage_events=False):
         connection = Connection(set(names), fail_first, fail_revision)
         with patch.object(db, 'catalog_resolution', scope), \
              patch.object(db, 'runtime_temp_evidence', new_callable=AsyncMock), \
              patch.object(db, 'verify_runtime_policy_authority', new_callable=AsyncMock):
-            await (db.validate_route_economics_foundation(connection) if successor
-                   else db.validate_product_foundation(connection))
+            await (db.validate_usage_events_foundation(connection) if usage_events else
+                   db.validate_route_economics_foundation(connection) if successor else
+                   db.validate_product_foundation(connection))
 
     async def test_v12_rejects_new_privileged_relation(self):
         with self.assertRaises(db.DatabaseUnavailable):
@@ -73,6 +74,19 @@ class FoundationAllowlistTests(unittest.IsolatedAsyncioTestCase):
     async def test_revision_failure_remains_closed(self):
         with self.assertRaises(db.DatabaseUnavailable):
             await self.run_foundation(True, set(), fail_revision=True)
+
+    async def test_v14_adds_only_the_single_usage_event_relation(self):
+        base = {'route_pricing_versions', 'route_pricing_revocations', 'route_decisions'}
+        await self.run_foundation(True, base | {'usage_events'}, usage_events=True)
+        for unexpected in ('usage_event', 'usage_events_archive', 'other_relation'):
+            with self.subTest(name=unexpected), self.assertRaises(db.DatabaseUnavailable):
+                await self.run_foundation(True, base | {'usage_events', unexpected}, usage_events=True)
+
+    async def test_historical_profiles_do_not_admit_usage_events(self):
+        with self.assertRaises(db.DatabaseUnavailable):
+            await self.run_foundation(False, {'usage_events'})
+        with self.assertRaises(db.DatabaseUnavailable):
+            await self.run_foundation(True, {'usage_events'})
 
 
 def privilege_stages():

@@ -253,7 +253,9 @@ def _stage(observer, name):
                 pass
 
 
-async def validate_route_economics_runtime(connection, *, stage_observer=None):
+async def validate_route_economics_runtime(connection, *, stage_observer=None,
+                                           expected_revision=EXPECTED_REVISION,
+                                           usage_events=False):
     """Validate V1.3 additions after the unchanged V1.2 product validator.
 
     V1.3 CHECK constraints use the existing fail-closed CHECK AST with its
@@ -262,11 +264,13 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None):
     parser can prove any observed catalog representation equivalent.
     """
     try:
-        await validate_route_economics_product_runtime(
-            connection, stage_observer=stage_observer)
+        from .product_runtime_validation import validate_usage_events_product_runtime
+        product_validator = (validate_usage_events_product_runtime if usage_events
+                             else validate_route_economics_product_runtime)
+        await product_validator(connection, stage_observer=stage_observer)
         async with catalog_resolution(connection):
             with _stage(stage_observer, "ROUTE_ECONOMICS_REVISION"):
-                if await connection.scalar(text(REVISION_SQL)) != EXPECTED_REVISION:
+                if await connection.scalar(text(REVISION_SQL)) != expected_revision:
                     raise ValueError()
             with _stage(stage_observer, "ROUTE_ECONOMICS_TABLES"):
                 rows = (await connection.execute(text(TABLE_SQL))).all()

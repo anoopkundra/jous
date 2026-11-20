@@ -10,6 +10,7 @@ from jous_api.config import ConfigurationError, load_migration_settings
 from jous_api.database import Database
 from jous_api.models import Base
 from jous_api import task_models  # explicitly register only approved additive tables
+from jous_api import usage_event_models  # V1.4B UsageEvent table metadata
 
 
 _FAILURE_STAGE = "SETTINGS"

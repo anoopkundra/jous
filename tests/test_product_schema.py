@@ -6,13 +6,14 @@ from sqlalchemy import CheckConstraint,ForeignKeyConstraint,UniqueConstraint,Pri
 from sqlalchemy.dialects.postgresql import UUID,BYTEA,JSONB
 from jous_api.models import Base,Project
 from jous_api.task_models import Task,Execution,tasks,executions,TASK_COLUMNS,EXECUTION_COLUMNS,TASK_CHECKS,EXECUTION_CHECKS
+from jous_api.usage_event_models import usage_events
 from test_schema_foundation import INI
 
 
 class ProductSchemaTests(unittest.TestCase):
-    def test_closed_six_table_composition_and_orders(self):
+    def test_closed_v14_table_composition_and_orders(self):
         self.assertEqual(set(Base.metadata.tables),{'public.'+n for n in
-            ('users','organizations','organization_memberships','projects','tasks','executions')})
+            ('users','organizations','organization_memberships','projects','tasks','executions','usage_events')})
         self.assertEqual(tuple(tasks.columns.keys()),TASK_COLUMNS)
         self.assertEqual(tuple(executions.columns.keys()),EXECUTION_COLUMNS)
     def test_no_record_mutability_or_client_defaults(self):
@@ -71,9 +72,11 @@ class ProductSchemaTests(unittest.TestCase):
         self.assertEqual(set(executions.indexes),set())
     def test_exact_linear_migration_chain(self):
         scripts=ScriptDirectory.from_config(Config(str(INI)))
-        self.assertEqual(scripts.get_heads(),['0006_snapshot_binding'])
+        self.assertEqual(scripts.get_heads(),['0008_usage_event_acl_hardening'])
         revisions=list(scripts.walk_revisions())
         self.assertEqual([(r.revision,r.down_revision) for r in revisions],[
+            ('0008_usage_event_acl_hardening','0007_usage_events'),
+            ('0007_usage_events','0006_snapshot_binding'),
             ('0006_snapshot_binding','0005_route_economics'),
             ('0005_route_economics','0004_product_acl_hardening'),
             ('0004_product_acl_hardening','0003_project_tasks_executions'),
@@ -91,6 +94,20 @@ class ProductSchemaTests(unittest.TestCase):
         self.assertLessEqual(len('0004_product_acl_hardening'),capacity)
         self.assertLessEqual(len('0005_route_economics'),capacity)
         self.assertLessEqual(len('0006_snapshot_binding'),capacity)
+        self.assertLessEqual(len('0008_usage_event_acl_hardening'),capacity)
+
+    def test_usage_event_schema_is_additive_and_immutable_shaped(self):
+        self.assertEqual(usage_events.primary_key.name,'pk_usage_events')
+        self.assertEqual({c.name for c in usage_events.constraints if isinstance(c,UniqueConstraint)}, {
+            'uq_usage_events_source_identity','uq_usage_events_single_successor','uq_usage_events_binding'})
+        self.assertFalse(any(c.name and c.name.startswith('uq_executions') for c in executions.constraints
+                             if isinstance(c,UniqueConstraint) and c.name != 'uq_executions_task_id'
+                             and c.name != 'uq_executions_dispatch_claim_id'))
+        self.assertEqual(usage_events.c.recorded_at.server_default.arg.text,'statement_timestamp()')
+        self.assertFalse(usage_events.c.recorded_at.nullable)
+        self.assertTrue(usage_events.c.input_tokens.nullable)
+        self.assertIn('UNAVAILABLE',str(next(c.sqltext for c in usage_events.constraints
+                                             if isinstance(c,CheckConstraint) and c.name=='ck_usage_events_status_values')))
     def test_error_outcomes_cannot_pass_checks_as_sql_null(self):
         shape=EXECUTION_CHECKS['ck_executions_outcome_shape']
         self.assertIn("status = 'known_error' AND error_code IS NOT NULL",shape)

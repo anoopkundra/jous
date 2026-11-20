@@ -235,7 +235,11 @@ class SQLStoreTests(unittest.IsolatedAsyncioTestCase):
         store=Store();service=ExecutionService(store,SimpleNamespace(execute=AsyncMock(return_value=Outcome('succeeded',response_text='x'))),admission=lambda route:None)
         await service.submit('mapped',store.project.id,data())
         task=next(iter(store.rows.values()));values={k:v for k,v in vars(task).items() if k!='created_at'}
-        session=SimpleNamespace(scalar=AsyncMock(),add=MagicMock(),flush=AsyncMock(),refresh=AsyncMock())
+        empty_decision=SimpleNamespace(mappings=lambda:SimpleNamespace(one_or_none=lambda:None))
+        inserted_event=SimpleNamespace(scalar_one_or_none=lambda:uuid4())
+        async def refresh(row):row.recorded_at=datetime.now(timezone.utc)
+        session=SimpleNamespace(scalar=AsyncMock(),add=MagicMock(),flush=AsyncMock(),
+            refresh=AsyncMock(side_effect=refresh),execute=AsyncMock(side_effect=[empty_decision,inserted_event]))
         unit=SQLUnit(session,store.project,store.actor)
         session.scalar.return_value=task
         await unit.existing(task.client_request_id)
@@ -254,6 +258,8 @@ class SQLStoreTests(unittest.IsolatedAsyncioTestCase):
         row=session.add.call_args.args[0]
         self.assertEqual(row.task_id,task.id);self.assertEqual(row.dispatch_claim_id,task.dispatch_claim_id)
         self.assertEqual(row.actor_user_id,store.actor);session.flush.assert_awaited_once();session.refresh.assert_awaited_once()
+        self.assertIn('public.route_decisions',str(session.execute.call_args_list[0].args[0]))
+        self.assertIn('usage_events',str(session.execute.call_args_list[1].args[0]))
         self.assertFalse(any(name in SQLUnit.__dict__ for name in ('update','delete','retry')))
 
     async def test_summary_pages_exact_progression_and_large_detail_exclusion(self):

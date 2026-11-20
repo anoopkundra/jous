@@ -10,6 +10,9 @@ from .access import AccessService
 from .task_permissions import authorize_project
 from .task_models import Task, Execution
 from .task_context import canonical, bounded, validate_claim
+from .usage_events import normalize_execution, persist_usage_event
+from sqlalchemy import text
+from types import SimpleNamespace
 
 
 def request_hash(data):
@@ -98,6 +101,13 @@ class SQLUnit:
         self.session.add(row)
         await self.session.flush()
         await self.session.refresh(row)
+        decision_row = (await self.session.execute(text("""SELECT task_id,organization_id,project_id,
+            actor_user_id,dispatch_claim_id,logical_model_id,logical_model_version,
+            selected_route_id,selected_route_version FROM public.route_decisions WHERE task_id=:task_id"""),
+            {"task_id": task.id})).mappings().one_or_none()
+        decision = SimpleNamespace(**decision_row) if decision_row is not None else None
+        event = normalize_execution(task, row, route_decision=decision)
+        await persist_usage_event(self.session, event)
         return row
 
     async def page(self, limit, after):

@@ -102,6 +102,7 @@ FOUNDATION_OBJECT_CHECK = """(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg
 STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0002_runtime_rls') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
 PRODUCT_STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0004_product_acl_hardening') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
 ROUTE_ECONOMICS_STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0006_snapshot_binding') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
+USAGE_EVENTS_STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0008_usage_event_acl_hardening') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
 
 
 async def validate_runtime(connection, *, state=True):
@@ -121,8 +122,15 @@ async def validate_route_economics_foundation(connection):
                                       route_economics=True)
 
 
+async def validate_usage_events_foundation(connection):
+    """V1.4B successor admits only its explicitly named additive relation."""
+    return await _validate_foundation(connection, product=True,
+        product_state_check=USAGE_EVENTS_STATE_CHECK, route_economics=True,
+        usage_events=True)
+
+
 async def _validate_foundation(connection, *, state=True, product=False, product_state_check=None,
-                               route_economics=False):
+                               route_economics=False, usage_events=False):
     """Catalog/connectivity checks only; never reads domain rows or calls helpers."""
     try:
         async with catalog_resolution(connection):
@@ -176,6 +184,8 @@ async def _validate_foundation(connection, *, state=True, product=False, product
                                      if product else "'users','organizations','organization_memberships','projects','alembic_version'")
                 if route_economics:
                     runtime_relations += ",'route_pricing_versions','route_pricing_revocations','route_decisions'"
+                if usage_events:
+                    runtime_relations += ",'usage_events'"
                 unrelated_safe = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
                     "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
                     "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "

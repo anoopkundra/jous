@@ -11,7 +11,8 @@ from time import perf_counter
 from sqlalchemy import text, CheckConstraint, ForeignKeyConstraint, UniqueConstraint, PrimaryKeyConstraint
 from sqlalchemy.dialects.postgresql import dialect
 from .database import (DatabaseUnavailable, validate_product_foundation,
-                       validate_route_economics_foundation)
+                       validate_route_economics_foundation,
+                       validate_usage_events_foundation)
 from .runtime_resolution import catalog_resolution
 from .task_models import tasks, executions, POLICIES, TASK_COLUMNS, EXECUTION_COLUMNS
 from .product_policy_canonicalization import canonical_policy_expression
@@ -765,10 +766,19 @@ async def validate_route_economics_product_runtime(connection, *, stage_observer
     return await _validate_product_runtime(connection, stage_observer=stage_observer, successor=True)
 
 
-async def _validate_product_runtime(connection, *, stage_observer=None, successor=False):
+async def validate_usage_events_product_runtime(connection, *, stage_observer=None):
+    """Run frozen product invariants at the exact V1.4B successor revision."""
+    return await _validate_product_runtime(connection, stage_observer=stage_observer,
+                                           successor=True, usage_events=True)
+
+
+async def _validate_product_runtime(connection, *, stage_observer=None, successor=False,
+                                    usage_events=False):
     try:
         with _validation_stage(stage_observer, 'FOUNDATION'):
-            await (validate_route_economics_foundation if successor else validate_product_foundation)(connection)
+            foundation = (validate_usage_events_foundation if usage_events else
+                          validate_route_economics_foundation if successor else validate_product_foundation)
+            await foundation(connection)
         async with catalog_resolution(connection):
             with _validation_stage(stage_observer, 'PRODUCT_RLS_ENCODING'):
                 if await connection.scalar(text("SELECT pg_catalog.current_setting('server_encoding') = 'UTF8' AND (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('tasks','executions') AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity) = 2")) is not True:
