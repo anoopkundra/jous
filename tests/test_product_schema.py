@@ -71,9 +71,11 @@ class ProductSchemaTests(unittest.TestCase):
         self.assertEqual(set(executions.indexes),set())
     def test_exact_linear_migration_chain(self):
         scripts=ScriptDirectory.from_config(Config(str(INI)))
-        self.assertEqual(scripts.get_heads(),['0004_product_acl_hardening'])
+        self.assertEqual(scripts.get_heads(),['0006_snapshot_binding'])
         revisions=list(scripts.walk_revisions())
         self.assertEqual([(r.revision,r.down_revision) for r in revisions],[
+            ('0006_snapshot_binding','0005_route_economics'),
+            ('0005_route_economics','0004_product_acl_hardening'),
             ('0004_product_acl_hardening','0003_project_tasks_executions'),
             ('0003_project_tasks_executions','0002_runtime_rls'),
             ('0002_runtime_rls','0001_identity_project'),('0001_identity_project',None)])
@@ -87,6 +89,8 @@ class ProductSchemaTests(unittest.TestCase):
             with self.subTest(revision=script.revision):
                 self.assertLessEqual(len(script.revision),capacity)
         self.assertLessEqual(len('0004_product_acl_hardening'),capacity)
+        self.assertLessEqual(len('0005_route_economics'),capacity)
+        self.assertLessEqual(len('0006_snapshot_binding'),capacity)
     def test_error_outcomes_cannot_pass_checks_as_sql_null(self):
         shape=EXECUTION_CHECKS['ck_executions_outcome_shape']
         self.assertIn("status = 'known_error' AND error_code IS NOT NULL",shape)

@@ -101,6 +101,7 @@ FOUNDATION_OBJECT_CHECK = """(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg
 
 STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0002_runtime_rls') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
 PRODUCT_STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0004_product_acl_hardening') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
+ROUTE_ECONOMICS_STATE_CHECK = "SELECT (SELECT count(*) FROM public.alembic_version WHERE version_num='0006_snapshot_binding') = 1 AND (SELECT count(*) FROM public.alembic_version) = 1 AND " + FOUNDATION_OBJECT_CHECK
 
 
 async def validate_runtime(connection, *, state=True):
@@ -112,11 +113,21 @@ async def validate_product_foundation(connection):
     return await _validate_foundation(connection, product=True)
 
 
-async def _validate_foundation(connection, *, state=True, product=False):
+async def validate_route_economics_foundation(connection):
+    # The V1.3 successor changes only the exact expected Alembic revision;
+    # all existing foundation/role/Step 7 predicates remain shared.
+    return await _validate_foundation(connection, product=True,
+                                      product_state_check=ROUTE_ECONOMICS_STATE_CHECK,
+                                      route_economics=True)
+
+
+async def _validate_foundation(connection, *, state=True, product=False, product_state_check=None,
+                               route_economics=False):
     """Catalog/connectivity checks only; never reads domain rows or calls helpers."""
     try:
         async with catalog_resolution(connection):
-            for sql in (ROLE_CHECK, BASELINE_CHECK, PRODUCT_STATE_CHECK if product else STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
+            product_check = product_state_check or PRODUCT_STATE_CHECK
+            for sql in (ROLE_CHECK, BASELINE_CHECK, product_check if product else STATE_CHECK) if state else (ROLE_CHECK, BASELINE_CHECK):
                 if await connection.scalar(text(sql)) is not True:
                     raise DatabaseUnavailable("Unsafe runtime database configuration")
             await runtime_temp_evidence(connection)
@@ -163,6 +174,8 @@ async def _validate_foundation(connection, *, state=True, product=False):
                     raise DatabaseUnavailable("Unsafe runtime database configuration")
                 runtime_relations = ("'users','organizations','organization_memberships','projects','alembic_version','tasks','executions'"
                                      if product else "'users','organizations','organization_memberships','projects','alembic_version'")
+                if route_economics:
+                    runtime_relations += ",'route_pricing_versions','route_pricing_revocations','route_decisions'"
                 unrelated_safe = await connection.scalar(text("SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
                     "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
                     "CROSS JOIN (VALUES ('jous_runtime'),('jous_security_reader')) r(name) "

@@ -1,14 +1,65 @@
-"""Fail-closed canonicalization for V1.2 product-policy catalog expressions.
+"""Fail-closed canonicalization for source-owned product-policy expressions.
 
 Only PostgreSQL renderings proven by the managed executions INSERT and
 tasks INSERT policy fixtures are folded. This parser is deliberately a
-small grammar for source-owned V1.2 policy expressions, not a general SQL
-normalizer.
+small grammar for source-owned policy expressions, not a general SQL
+normalizer. V1.3 forms are separately gated by their exact policy names.
 """
 import re
 
 
 UUID_PATTERN = "'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+V13_POLICY_NAMES = {
+    'jous_route_pricing_select', 'jous_route_revocations_select',
+    'jous_route_decisions_select', 'jous_route_decisions_insert',
+}
+
+_V13_POLICY_RELATIONS = {
+    'jous_route_pricing_select': {('public', 'route_pricing_revocations'): 'r'},
+    'jous_route_revocations_select': {},
+    'jous_route_decisions_select': {('public', 'tasks'): 't'},
+    'jous_route_decisions_insert': {
+        ('public', 'tasks'): 't',
+        ('public', 'route_pricing_versions'): 'p',
+    },
+}
+
+_V13_POLICY_IDENTIFIERS = {
+    'jous_route_pricing_select': {
+        ('pricing_status',), ('r', 'pricing_version_id'),
+        ('route_pricing_versions', 'pricing_version_id'),
+    },
+    'jous_route_revocations_select': set(),
+    'jous_route_decisions_select': {
+        ('t', 'id'), ('route_decisions', 'task_id'),
+        ('t', 'organization_id'), ('route_decisions', 'organization_id'),
+        ('t', 'project_id'), ('route_decisions', 'project_id'),
+        ('t', 'actor_user_id'), ('route_decisions', 'actor_user_id'),
+        ('t', 'dispatch_claim_id'), ('route_decisions', 'dispatch_claim_id'),
+    },
+    'jous_route_decisions_insert': {
+        ('t', 'id'), ('route_decisions', 'task_id'),
+        ('t', 'organization_id'), ('route_decisions', 'organization_id'),
+        ('t', 'project_id'), ('route_decisions', 'project_id'),
+        ('t', 'actor_user_id'), ('route_decisions', 'actor_user_id'),
+        ('t', 'dispatch_claim_id'), ('route_decisions', 'dispatch_claim_id'),
+        ('p', 'pricing_version_id'), ('route_decisions', 'pricing_version_id'),
+        ('p', 'route_id'), ('route_decisions', 'selected_route_id'),
+        ('p', 'route_version'), ('route_decisions', 'selected_route_version'),
+        ('p', 'service_tier'), ('route_decisions', 'service_tier'),
+        ('p', 'currency'), ('route_decisions', 'currency'),
+        ('p', 'billing_basis'), ('route_decisions', 'billing_basis'),
+    },
+}
+
+_V13_TEXT_IDENTIFIERS = {
+    identifier for policy in _V13_POLICY_IDENTIFIERS.values()
+    for identifier in policy
+    if identifier[-1] in {
+        'pricing_status', 'pricing_version_id', 'route_id', 'service_tier',
+        'currency', 'billing_basis', 'selected_route_id',
+    }
+}
 
 
 class _PolicySyntaxError(ValueError):
@@ -63,9 +114,10 @@ def _tokens(source):
 
 
 class _Parser:
-    def __init__(self,tokens):
+    def __init__(self,tokens,policy_name=None):
         self.tokens=tokens
         self.position=0
+        self.policy_name=policy_name
 
     def peek(self,kind=None,value=None):
         if self.position>=len(self.tokens):return False
@@ -104,17 +156,20 @@ class _Parser:
         return ('AND',tuple(children)) if len(children)>1 else children[0]
 
     def parse_predicate(self):
-        if self.word('EXISTS'):
-            self.require_punctuation('(')
-            self.take('word','SELECT')
-            selected=self.parse_scalar()
-            self.take('word','FROM')
-            relation=self.parse_name()
-            alias=self.take('word')[1]
-            self.take('word','WHERE')
-            condition=self.parse_or()
-            self.require_punctuation(')')
-            return ('EXISTS',selected,relation,alias,condition)
+        if self.policy_name == 'jous_route_revocations_select' and self.peek('word'):
+            if self.word('TRUE'):return ('BOOLEAN',True)
+            if self.word('FALSE'):return ('BOOLEAN',False)
+        if self.policy_name == 'jous_route_pricing_select' and self.word('NOT'):
+            if self.peek('word','EXISTS'):
+                return ('NOT',self._parse_exists())
+            if self.punctuation('('):
+                self.require_punctuation('(')
+                exists=self._parse_exists()
+                self.require_punctuation(')')
+                return ('NOT',exists)
+            raise _PolicySyntaxError('unsupported NOT predicate')
+        if self.peek('word','EXISTS'):
+            return self._parse_exists()
 
         left=self.parse_scalar()
         if self.word('IS'):
@@ -139,18 +194,35 @@ class _Parser:
         elif self.peek('operator') and self.tokens[self.position][1] in ('=','<>','!=','<','<=','>','>=','~'):
             operator=self.take('operator')[1]
         else:
-            if (isinstance(left,tuple) and
-                    (left[0] in ('AND','OR','EXISTS','IS_NULL','COMPARE') or
-                     (len(left)==3 and left[0]=='CALL'
-                      and left[1]==('jous_security','organization_is_active')
-                      and len(left[2])==1))):
+            recognized = (isinstance(left,tuple) and
+                (left[0] in ('AND','OR','EXISTS','IS_NULL','COMPARE') or
+                 (left[0]=='NOT' and self.policy_name=='jous_route_pricing_select') or
+                 (len(left)==3 and left[0]=='CALL'
+                  and left[1]==('jous_security','organization_is_active')
+                  and len(left[2])==1)))
+            if recognized:
                 return left
             # Policy predicates in the source contract are comparisons,
             # NULL tests, IN lists, Boolean combinations, or EXISTS.
             raise _PolicySyntaxError('unsupported predicate')
+        if self.policy_name in V13_POLICY_NAMES and operator != '=':
+            raise _PolicySyntaxError('unsupported V1.3 policy operator')
         right=self.parse_scalar()
         left,right=self._normalize_proven_comparison(operator,left,right)
         return ('COMPARE',operator,left,right)
+
+    def _parse_exists(self):
+        self.take('word','EXISTS')
+        self.require_punctuation('(')
+        self.take('word','SELECT')
+        selected=self.parse_scalar()
+        self.take('word','FROM')
+        relation=self.parse_name()
+        alias=self.take('word')[1]
+        self.take('word','WHERE')
+        condition=self.parse_or()
+        self.require_punctuation(')')
+        return ('EXISTS',selected,relation,alias,condition)
 
     @staticmethod
     def _is_tasks_role_array(node):
@@ -226,6 +298,8 @@ class _Parser:
 
     def parse_primary(self):
         if self.word('CAST'):
+            if self.policy_name in V13_POLICY_NAMES:
+                raise _PolicySyntaxError('unsupported V1.3 CAST syntax')
             self.require_punctuation('(')
             value=self.parse_scalar()
             self.take('word','AS')
@@ -278,6 +352,8 @@ class _Parser:
         if self.peek('word') or self.peek('identifier'):
             name=self.parse_name()
             if self.punctuation('('):
+                if self.policy_name in V13_POLICY_NAMES:
+                    raise _PolicySyntaxError('unsupported V1.3 function')
                 self.require_punctuation('(')
                 args=[]
                 if not self.punctuation(')'):
@@ -321,7 +397,7 @@ class _Parser:
 
 
 def canonical_policy_expression(source, *, policy_name=None):
-    """Return a complete V1.2 policy AST; reject absent or unsupported input.
+    """Return a complete policy AST; reject absent or unsupported input.
 
     Absence is represented only by the caller, which knows whether a policy
     clause is actually NULL. A supplied expression must never collapse to
@@ -330,8 +406,10 @@ def canonical_policy_expression(source, *, policy_name=None):
     tokens=_tokens(source)
     if tokens is None or not tokens:
         raise _PolicySyntaxError('policy expression is absent or unsupported')
+    if policy_name in V13_POLICY_NAMES:
+        tokens=_unwrap_policy_outer_groups(tokens)
     try:
-        result=_Parser(tokens).parse()
+        result=_Parser(tokens,policy_name=policy_name).parse()
         # Fold only the observed source IN and catalog typed-ANY forms for
         # the owner/member admission predicate in tasks policies. The ordered
         # values, varchar element casts, text[] result cast, and m.role
@@ -349,9 +427,148 @@ def canonical_policy_expression(source, *, policy_name=None):
             children=list(result[1]);comparison=list(children[0])
             comparison[2]=('IDENTIFIER',('executions','actor_user_id'))
             children[0]=tuple(comparison);result=('AND',tuple(children))
+        if policy_name in V13_POLICY_NAMES:
+            result=_normalize_v13_policy(result,policy_name)
         return result
     except _PolicySyntaxError:
         raise
+
+
+def _unwrap_policy_outer_groups(tokens):
+    """Remove only balanced parentheses enclosing the complete token stream."""
+    tokens=tuple(tokens)
+    while len(tokens)>=2 and tokens[0]==('punctuation','(') and tokens[-1]==('punctuation',')'):
+        depth=0;wraps_all=True
+        for index,token in enumerate(tokens):
+            if token==('punctuation','('):depth+=1
+            elif token==('punctuation',')'):
+                depth-=1
+                if depth<0:
+                    raise _PolicySyntaxError('malformed policy grouping')
+                if depth==0 and index!=len(tokens)-1:
+                    wraps_all=False
+                    break
+        if depth!=0:
+            raise _PolicySyntaxError('malformed policy grouping')
+        if not wraps_all:
+            break
+        tokens=tokens[1:-1]
+    return tokens
+
+
+def _normalize_v13_policy(node,policy_name):
+    """Apply only the observed PG17 renderings for the four 0005 policies."""
+    allowed_relations=_V13_POLICY_RELATIONS[policy_name]
+    allowed_identifiers=_V13_POLICY_IDENTIFIERS[policy_name]
+
+    def walk(value):
+        if not isinstance(value,tuple):
+            return value
+        if value[:1]==('IDENTIFIER',):
+            identifier=value[1]
+            if identifier not in allowed_identifiers:
+                raise _PolicySyntaxError('unsupported V1.3 policy identifier')
+            return value
+        if value[:1]==('CAST',):
+            if (len(value)==3 and value[2]==('text',)
+                    and value[1][:1]==('IDENTIFIER',)
+                    and value[1][1] in _V13_TEXT_IDENTIFIERS
+                    and value[1][1] in allowed_identifiers):
+                return walk(value[1])
+            if (len(value)==3 and value[2]==('text',)
+                    and value[1][:1]==('LITERAL',)):
+                return value[1]
+            raise _PolicySyntaxError('unsupported V1.3 policy cast')
+        if value[:1]==('EXISTS',):
+            if len(value)!=5 or value[1]!=('NUMBER','1'):
+                raise _PolicySyntaxError('unsupported V1.3 subquery')
+            relation=value[2]
+            if len(relation)==1:
+                relation=('public',relation[0])
+            if (relation, value[3]) not in allowed_relations.items():
+                raise _PolicySyntaxError('unsupported V1.3 subquery relation or alias')
+            return ('EXISTS',value[1],relation,value[3],walk(value[4]))
+        if value[:1]==('COMPARE',):
+            if len(value)!=4 or value[1]!='=':
+                raise _PolicySyntaxError('unsupported V1.3 comparison')
+            return ('COMPARE',value[1],walk(value[2]),walk(value[3]))
+        if value[:1]==('AND',):
+            if len(value)!=2 or not isinstance(value[1],tuple) or len(value[1])<2:
+                raise _PolicySyntaxError('unsupported V1.3 Boolean structure')
+            return ('AND',tuple(walk(child) for child in value[1]))
+        if value[:1]==('OR',):
+            raise _PolicySyntaxError('unsupported V1.3 OR structure')
+        if value[:1]==('NOT',):
+            if policy_name!='jous_route_pricing_select' or len(value)!=2 or value[1][:1]!=('EXISTS',):
+                raise _PolicySyntaxError('unsupported V1.3 NOT structure')
+            return ('NOT',walk(value[1]))
+        if value[:1] in (('BOOLEAN',),('LITERAL',),('NUMBER',)):
+            return value
+        raise _PolicySyntaxError('unsupported V1.3 policy expression')
+
+    result=walk(node)
+    task_bindings=(
+        (('t','id'),('route_decisions','task_id')),
+        (('t','organization_id'),('route_decisions','organization_id')),
+        (('t','project_id'),('route_decisions','project_id')),
+        (('t','actor_user_id'),('route_decisions','actor_user_id')),
+        (('t','dispatch_claim_id'),('route_decisions','dispatch_claim_id')),
+    )
+    pricing_bindings=(
+        (('p','pricing_version_id'),('route_decisions','pricing_version_id')),
+        (('p','route_id'),('route_decisions','selected_route_id')),
+        (('p','route_version'),('route_decisions','selected_route_version')),
+        (('p','service_tier'),('route_decisions','service_tier')),
+        (('p','currency'),('route_decisions','currency')),
+        (('p','billing_basis'),('route_decisions','billing_basis')),
+    )
+
+    def exists_pairs(value,relation,alias,pairs):
+        if not (isinstance(value,tuple) and len(value)==5 and value[0]=='EXISTS'
+                and value[1]==('NUMBER','1') and value[2]==('public',relation)
+                and value[3]==alias):
+            return False
+        condition=value[4]
+        comparisons=condition[1] if isinstance(condition,tuple) and condition[:1]==('AND',) else (condition,)
+        actual=[]
+        for comparison in comparisons:
+            if not (isinstance(comparison,tuple) and len(comparison)==4
+                    and comparison[0]=='COMPARE' and comparison[1]=='='):
+                return False
+            actual.append((comparison[2][1],comparison[3][1])
+                          if comparison[2][:1]==('IDENTIFIER',)
+                          and comparison[3][:1]==('IDENTIFIER',) else None)
+        return tuple(actual)==pairs
+
+    # The pricing policy is an approved-status predicate plus exactly one
+    # correlated revocation exclusion. Bare booleans are confined to the
+    # revocation policy. Decision SELECT/INSERT are exact EXISTS conjunctions.
+    if policy_name=='jous_route_revocations_select':
+        if result[:1]!=('BOOLEAN',):
+            raise _PolicySyntaxError('unsupported revocation policy predicate')
+    elif policy_name=='jous_route_pricing_select':
+        if result[:1]!=('AND',) or len(result[1])!=2:
+            raise _PolicySyntaxError('unsupported pricing policy structure')
+        status,exclusion=result[1]
+        if (not (isinstance(status,tuple) and len(status)==4 and status[0]=='COMPARE'
+                 and status[1]=='=' and status[2]==('IDENTIFIER',('pricing_status',))
+                 and status[3]==('LITERAL',"'approved'"))
+                or not (isinstance(exclusion,tuple) and len(exclusion)==2
+                        and exclusion[0]=='NOT'
+                        and exists_pairs(exclusion[1],'route_pricing_revocations','r',
+                                         ((('r','pricing_version_id'),
+                                           ('route_pricing_versions','pricing_version_id')),)))):
+            raise _PolicySyntaxError('unsupported pricing policy structure')
+    else:
+        if policy_name=='jous_route_decisions_select':
+            if not exists_pairs(result,'tasks','t',task_bindings):
+                raise _PolicySyntaxError('unsupported route-decision SELECT policy structure')
+        else:
+            if (result[:1]!=('AND',) or len(result[1])!=2
+                    or not exists_pairs(result[1][0],'tasks','t',task_bindings)
+                    or not exists_pairs(result[1][1],'route_pricing_versions','p',pricing_bindings)):
+                raise _PolicySyntaxError('unsupported route-decision INSERT policy structure')
+    return result
 
 
 def _normalize_tasks_role_members(node):

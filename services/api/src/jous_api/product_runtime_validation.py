@@ -10,7 +10,8 @@ from contextlib import contextmanager
 from time import perf_counter
 from sqlalchemy import text, CheckConstraint, ForeignKeyConstraint, UniqueConstraint, PrimaryKeyConstraint
 from sqlalchemy.dialects.postgresql import dialect
-from .database import DatabaseUnavailable, validate_product_foundation
+from .database import (DatabaseUnavailable, validate_product_foundation,
+                       validate_route_economics_foundation)
 from .runtime_resolution import catalog_resolution
 from .task_models import tasks, executions, POLICIES, TASK_COLUMNS, EXECUTION_COLUMNS
 from .product_policy_canonicalization import canonical_policy_expression
@@ -150,7 +151,7 @@ def _outer_check_group(tokens):
     return False
 
 
-def _top_level_check_splits(tokens,keyword):
+def _top_level_check_splits(tokens,keyword, *, route_economics=False):
     stack=[];pairs={')':'(',']':'[','}':'{'};splits=[];top_level=[]
     for i,(kind,value) in enumerate(tokens):
         top_level.append(not stack)
@@ -161,49 +162,191 @@ def _top_level_check_splits(tokens,keyword):
     for i,(kind,value) in enumerate(tokens):
         if not top_level[i] or kind!='word' or value.upper()!=keyword:
             continue
-        if (keyword=='AND' and i>=3 and i+1<len(tokens)
+        if (not route_economics and keyword=='AND' and i>=3 and i+1<len(tokens)
                 and top_level[i-3] and top_level[i-2] and top_level[i-1]
-                and top_level[i+1]
-                and tokens[i-3][0] in ('word','quoted_identifier')
+                and top_level[i+1] and tokens[i-3][0] in ('word','quoted_identifier')
                 and tokens[i-2][0]=='word' and tokens[i-2][1].upper()=='BETWEEN'
-                and tokens[i-1][0]=='number'
-                and tokens[i+1][0]=='number'):
-            # This AND belongs to the bounded simple form
-            # identifier BETWEEN numeric AND numeric, not the boolean tree.
+                and tokens[i-1][0]=='number' and tokens[i+1][0]=='number'):
             continue
+        if (route_economics and keyword=='AND' and i>0 and i+1<len(tokens)
+                and tokens[i-1][0]=='number' and tokens[i+1][0]=='number'):
+            between_positions=[j for j in range(i-1) if top_level[j] and
+                               tokens[j][0]=='word' and tokens[j][1].upper()=='BETWEEN']
+            if (between_positions and between_positions[-1]+1<=i-1
+                    and all(tokens[j][0]!='word' or tokens[j][1].upper()!='BETWEEN'
+                            for j in range(between_positions[-1]+1,i))):
+                # This AND is the separator in BETWEEN <numeric> AND <numeric>,
+                # including a structurally preserved function-call LHS.
+                continue
         splits.append(i)
     return splits
 
 
-def _canonical_check_node(tokens):
+_ROUTE_ECONOMICS_CHECKS = {
+    ('route_pricing_versions', name) for name in (
+        'ck_route_pricing_version_positive', 'ck_route_pricing_currency',
+        'ck_route_pricing_billing', 'ck_route_pricing_rates',
+        'ck_route_pricing_provider_fee', 'ck_route_pricing_gateway_fee',
+        'ck_route_pricing_approval', 'ck_route_pricing_source',
+        'ck_route_pricing_evidence')
+} | {
+    ('route_pricing_revocations', 'ck_route_pricing_revocation_fields'),
+} | {
+    ('route_decisions', name) for name in (
+        'ck_route_decisions_snapshot', 'ck_route_decisions_snapshot_binding',
+        'ck_route_decisions_hash', 'ck_route_decisions_snapshot_digest',
+        'ck_route_decisions_currency', 'ck_route_decisions_route_version',
+        'ck_route_decisions_token_bounds', 'ck_route_decisions_estimate',
+        'ck_route_decisions_identity')
+}
+
+_ROUTE_ECONOMICS_TEXT_COLUMNS = {
+    'pricing_version_id', 'route_id', 'service_tier', 'currency', 'billing_basis',
+    'pricing_status', 'source_type', 'source_evidence_id', 'reason_code', 'evidence_id',
+    'decision_version', 'selector_version', 'logical_model_id', 'selected_route_id',
+}
+
+
+def _route_economics_catalog_tokens(tokens):
+    """Normalize only PostgreSQL 17's observed coercions in V1.3 CHECKs.
+
+    This is opt-in from the CHECK AST entrypoint after table/constraint allowlisting.
+    It preserves operators, field names, literals, array order and non-text casts.
+    """
+    tokens=list(tokens)
+    builtins={'isfinite','jsonb_typeof','jsonb_array_length','sha256','convert_to'}
+    result=[];i=0
+    while i<len(tokens):
+        if (i+4<len(tokens) and tuple(tokens[i:i+5])==(
+                ('operator','::'),('word','timestamp'),('word','with'),('word','time'),('word','zone'))):
+            result.extend((('operator','::'),('word','timestamptz')));i+=5;continue
+        # PostgreSQL deparses a schema-qualified built-in without qualification.
+        if (i+2<len(tokens) and tuple(tokens[i:i+2])==(('word','pg_catalog'),('punctuation','.'))
+                and tokens[i+2][0]=='word' and tokens[i+2][1] in builtins):
+            result.append(tokens[i+2]);i+=3;continue
+        # Varchar/text columns are relabeled to text by PostgreSQL in comparison
+        # and btrim contexts. The exact column allowlist comes from 0005's schema.
+        if (i+2<len(tokens) and tokens[i][0] in ('word','quoted_identifier')
+                and tokens[i][1] in _ROUTE_ECONOMICS_TEXT_COLUMNS
+                and tuple(tokens[i+1:i+3])==(('operator','::'),('word','text'))):
+            result.append(tokens[i]);i+=3;continue
+        # A parenthesized numeric zero cast to numeric is PostgreSQL's rendering
+        # of the source integer literal in the approved numeric >= 0 checks.
+        if (i+4<len(tokens) and tokens[i]==('punctuation','(')
+                and tokens[i+1]==('number','0') and tokens[i+2]==('punctuation',')')
+                and tokens[i+3]==('operator','::') and tokens[i+4]==('word','numeric')):
+            result.append(('number','0'));i+=5;continue
+        # convert_to's encoding argument has type name; PostgreSQL deparses the
+        # source's unknown string literal with an explicit ::name coercion.
+        if (i+3<len(tokens) and tokens[i]==('literal',"'UTF8'")
+                and tuple(tokens[i+1:i+3])==(('operator','::'),('word','name'))):
+            result.append(tokens[i]);i+=3;continue
+        # Text casts on literal operands are accepted only in text comparison or
+        # JSON key positions. Cast targets elsewhere remain part of the AST.
+        if (i+2<len(tokens) and tokens[i][0]=='literal'
+                and tuple(tokens[i+1:i+3])==(('operator','::'),('word','text'))
+                and (result and result[-1] in (('operator','='),('operator','<>'),
+                     ('operator','->'),('operator','->>')))):
+            result.append(tokens[i]);i+=3;continue
+        result.append(tokens[i]);i+=1
+    tokens=tuple(result)
+    # PostgreSQL adds one redundant group around a sole JSON function argument,
+    # or around a JSON operator expression before its explicitly preserved cast.
+    # Strip only those syntactically matched wrappers; casts/operators remain.
+    changed=True
+    while changed:
+        changed=False;stack=[];pairs={')':'(',']':'[','}':'{'}
+        for i,token in enumerate(tokens):
+            if token==('punctuation','('):stack.append(i)
+            elif token==('punctuation',')') and stack:
+                start=stack.pop()
+                if start+1>=i:continue
+                function_argument=(start>=2 and tokens[start-1]==('punctuation','(')
+                    and tokens[start-2][0]=='word' and tokens[start-2][1] in
+                    {'jsonb_typeof','jsonb_array_length','length','btrim'}
+                    and i+1<len(tokens) and tokens[i+1]==('punctuation',')'))
+                cast_operand=(i+2<len(tokens) and tokens[i+1]==('operator','::')
+                    and tokens[i+2][0]=='word'
+                    and any(t in (('operator','->'),('operator','->>')) for t in tokens[start+1:i]))
+                json_chain_operand=(i+1<len(tokens)
+                    and tokens[i+1] in (('operator','->'),('operator','->>'))
+                    and any(t in (('operator','->'),('operator','->>')) for t in tokens[start+1:i]))
+                comparison_operand=(i+1<len(tokens)
+                    and tokens[i+1] in (('operator','='),('operator','<>'),('operator','!='),
+                                        ('operator','<'),('operator','<='),('operator','>'),('operator','>='))
+                    and any(t in (('operator','->'),('operator','->>')) for t in tokens[start+1:i]))
+                if function_argument or cast_operand or json_chain_operand or comparison_operand:
+                    tokens=tokens[:start]+tokens[start+1:i]+tokens[i+1:]
+                    changed=True;break
+    return tokens
+
+
+def _canonical_check_node(tokens, *, route_economics=False, check_name=None):
     if not tokens:return None
     while _outer_check_group(tokens):
         tokens=tokens[1:-1]
         if not tokens:return None
+    # PostgreSQL CHECK accepts both TRUE and NULL. The successor constraint
+    # uses IS TRUE to reject UNKNOWN; recognize this wrapper only for that one
+    # explicitly scoped route-economics constraint.
+    if (route_economics and check_name=='ck_route_decisions_snapshot_binding'
+            and len(tokens)>=4
+            and tuple(tokens[-2:])==(('word','IS'),('word','TRUE'))):
+        predicate=tokens[:-2]
+        if _outer_check_group(predicate):
+            predicate=predicate[1:-1]
+        child=_canonical_check_node(predicate,route_economics=True,check_name=check_name)
+        return None if child is None else ('IS_TRUE',(child,))
     # Normalize only identifier BETWEEN numeric AND numeric. The splitter
     # above protects its internal AND so the form arrives here intact.
-    if (len(tokens)==5 and tokens[0][0] in ('word','quoted_identifier')
+    if (not route_economics and len(tokens)==5 and tokens[0][0] in ('word','quoted_identifier')
             and tokens[1][0]=='word' and tokens[1][1].upper()=='BETWEEN'
             and tokens[2][0]=='number' and tokens[3][0]=='word'
             and tokens[3][1].upper()=='AND' and tokens[4][0]=='number'):
         identifier=tokens[0]
-        return ('AND',(
-            ('ATOM',(identifier,('operator','>='),tokens[2])),
-            ('ATOM',(identifier,('operator','<='),tokens[4])),
-        ))
+        return ('AND',(('ATOM',(identifier,('operator','>='),tokens[2])),
+                       ('ATOM',(identifier,('operator','<='),tokens[4]))))
     # Split at SQL boolean precedence without reordering, flattening, or
     # replacing operators. Parenthesized children retain their own tree.
     for keyword in ('OR','AND'):
-        splits=_top_level_check_splits(tokens,keyword)
+        splits=_top_level_check_splits(tokens,keyword,route_economics=route_economics)
         if splits is None:return None
         if splits:
             boundaries=[-1,*splits,len(tokens)]
             children=[]
             for left,right in zip(boundaries,boundaries[1:]):
-                child=_canonical_check_node(tokens[left+1:right])
+                child=_canonical_check_node(tokens[left+1:right],route_economics=route_economics,
+                                            check_name=check_name)
                 if child is None:return None
                 children.append(child)
             return (keyword,tuple(children))
+    # PostgreSQL expands inclusive BETWEEN into >= / <=. Preserve the complete
+    # parsed left expression and both numeric endpoints in the resulting tree.
+    depth=0;between_at=[];and_at=[]
+    for i,(kind,value) in enumerate(tokens):
+        if kind=='punctuation':
+            if value in '([{':depth+=1
+            elif value in ')]}':depth-=1
+        elif depth==0 and kind=='word':
+            if value.upper()=='BETWEEN':between_at.append(i)
+            elif value.upper()=='AND':and_at.append(i)
+    if route_economics and between_at:
+        if len(between_at)!=1:return None
+        start=between_at[0]
+        delimiters=[i for i in and_at if i>start]
+        if (not start or not delimiters or len(tokens[start+1:delimiters[0]])!=1
+                or tokens[start+1][0]!='number' or delimiters[0]+2!=len(tokens)
+                or tokens[delimiters[0]+1][0]!='number'):
+            return None
+        left=tokens[:start]
+        lower=tokens[start+1]
+        upper=tokens[delimiters[0]+1]
+        low=_canonical_check_atom((*left,('operator','>='),lower),
+                                  route_economics=route_economics)
+        high=_canonical_check_atom((*left,('operator','<='),upper),
+                                   route_economics=route_economics)
+        if low is None or high is None:return None
+        return ('AND',(low,high))
     # Reject common incomplete predicates/operators. All other atom tokens
     # remain exact, including casts, identifiers, literals, and operators.
     top=[];stack=[];pairs={')':'(',']':'[','}':'{'}
@@ -224,10 +367,10 @@ def _canonical_check_node(tokens):
     if (top[-1][1] in binary or top[-1][1] in ('AND','OR','IS','IN','LIKE','ILIKE','BETWEEN','NOT')
             or top[0][1] in binary-{'+' , '-'} or top[0][1] in ('AND','OR','IS','IN','LIKE','ILIKE','BETWEEN')):
         return None
-    return _canonical_check_atom(tuple(tokens))
+    return _canonical_check_atom(tuple(tokens),route_economics=route_economics)
 
 
-def _string_literal_list(values, *, allow_text_cast):
+def _string_literal_list(values, *, allow_text_cast, allow_varchar_cast=False):
     """Parse only a nonempty ordered list of SQL string-literal tokens."""
     if not values:
         return None
@@ -236,9 +379,12 @@ def _string_literal_list(values, *, allow_text_cast):
         if values[i][0]!='literal':return None
         result.append(values[i]);i+=1
         if i<len(values) and values[i]==('operator','::'):
-            if not allow_text_cast or i+1>=len(values) or values[i+1]!=('word','text'):
-                return None
-            i+=2
+            if allow_text_cast and i+1<len(values) and values[i+1]==('word','text'):
+                i+=2
+            elif (allow_varchar_cast and i+2<len(values)
+                  and tuple(values[i+1:i+3])==(('word','character'),('word','varying'))):
+                i+=3
+            else:return None
         if i==len(values):break
         if values[i]!=('punctuation',','):return None
         i+=1
@@ -246,7 +392,7 @@ def _string_literal_list(values, *, allow_text_cast):
     return tuple(result)
 
 
-def _canonical_in_any_atom(tokens):
+def _canonical_in_any_atom(tokens, *, route_economics=False):
     """Recognize only identifier IN(list) and its literal ARRAY ANY form."""
     has_in_any=any(kind=='word' and value.upper() in ('IN','ANY') for kind,value in tokens)
     if not has_in_any:
@@ -265,6 +411,22 @@ def _canonical_in_any_atom(tokens):
             and tokens[5]==('punctuation','[') and tokens[-2]==('punctuation',']')
             and tokens[-1]==('punctuation',')')):
         members=_string_literal_list(tokens[6:-2],allow_text_cast=True)
+        if members is not None:
+            return True,('IN_LIST',(tokens[0],members))
+        return True,None
+    # Exact PostgreSQL 17 rendering of varchar IN(string literals):
+    # lhs = ANY ((ARRAY['a'::character varying,...])::text[])
+    # Only the ordered, nonempty literal array and these exact element/result
+    # types are accepted; arbitrary ANY expressions remain unsupported.
+    if (route_economics and len(tokens)>=15
+            and tokens[0][0] in ('word','quoted_identifier')
+            and tokens[1]==('operator','=') and tokens[2]==('word','ANY')
+            and tuple(tokens[3:6])==(('punctuation','('),('punctuation','('),('word','ARRAY'))
+            and tokens[6]==('punctuation','[')
+            and tuple(tokens[-7:])==(('punctuation',']'),('punctuation',')'),('operator','::'),
+                              ('word','text'),('punctuation','['),('punctuation',']'),
+                              ('punctuation',')'))):
+        members=_string_literal_list(tokens[7:-7],allow_text_cast=False,allow_varchar_cast=True)
         if members is not None:
             return True,('IN_LIST',(tokens[0],members))
         return True,None
@@ -467,22 +629,27 @@ def _canonical_identifier_addition_comparison(tokens):
     return None
 
 
-def _canonical_check_atom(tokens):
-    tokens=_canonical_json_text_key_casts(tokens)
-    tokens=_canonical_simple_identifier_cast_operand(tokens)
+def _canonical_check_atom(tokens, *, route_economics=False):
+    if route_economics:
+        tokens=_canonical_simple_identifier_cast_operand(tokens)
+        tokens=_route_economics_catalog_tokens(tokens)
+        tokens=_canonical_json_text_key_casts(tokens)
+    else:
+        tokens=_canonical_json_text_key_casts(tokens)
+        tokens=_canonical_simple_identifier_cast_operand(tokens)
     recognized,normalized=_canonical_40_second_interval_comparison(tokens)
     if recognized:
         return normalized
     normalized=_canonical_identifier_addition_comparison(tokens)
     if normalized is not None:
         return normalized
-    recognized,normalized=_canonical_in_any_atom(tokens)
+    recognized,normalized=_canonical_in_any_atom(tokens,route_economics=route_economics)
     if recognized:
         return normalized
     return _canonical_literal_text_comparison(tokens)
 
 
-def canonicalize_check_ast(node):
+def canonicalize_check_ast(node, *, route_economics=False):
     """Apply the narrow catalog-equivalence rules to a parsed CHECK AST."""
     if not isinstance(node,tuple) or len(node)!=2:
         return None
@@ -490,7 +657,7 @@ def canonicalize_check_ast(node):
     if kind in ('AND','OR'):
         if not isinstance(value,tuple) or len(value)<2:
             return None
-        children=tuple(canonicalize_check_ast(child) for child in value)
+        children=tuple(canonicalize_check_ast(child,route_economics=route_economics) for child in value)
         if any(child is None for child in children):
             return None
         if kind=='AND':
@@ -511,21 +678,28 @@ def canonicalize_check_ast(node):
                         for member in value[1])):
             return node
         return None
+    if kind=='IS_TRUE':
+        if (not route_economics or not isinstance(value,tuple) or len(value)!=1):
+            return None
+        child=canonicalize_check_ast(value[0],route_economics=True)
+        return None if child is None else ('IS_TRUE',(child,))
     if kind!='ATOM' or not isinstance(value,tuple):
         return None
-    return _canonical_check_atom(value)
+    return _canonical_check_atom(value,route_economics=route_economics)
 
 
-def canonical_check_expression(value, table=None, name=None):
+def canonical_check_expression(value, table=None, name=None, *, route_economics=False):
     """Canonicalize only Boolean grouping for CHECK constraints."""
     if not isinstance(value,str):return None
+    if route_economics and (table,name) not in _ROUTE_ECONOMICS_CHECKS:
+        return None
     if table=='executions' and name=='ck_executions_error_code':
         value=canonical_error_code_expression(value)
         if value is None:return None
     tokens=_check_tokens(value)
     if tokens is None or not _check_delimiters(tokens):return None
-    parsed=_canonical_check_node(tokens)
-    return canonicalize_check_ast(parsed)
+    parsed=_canonical_check_node(tokens,route_economics=route_economics,check_name=name)
+    return canonicalize_check_ast(parsed,route_economics=route_economics)
 
 
 def expected_columns():
@@ -583,9 +757,18 @@ def _validation_stage(observer, name):
 
 
 async def validate_product_runtime(connection, *, stage_observer=None):
+    return await _validate_product_runtime(connection, stage_observer=stage_observer, successor=False)
+
+
+async def validate_route_economics_product_runtime(connection, *, stage_observer=None):
+    """Run the unchanged product contract against its explicit V1.3 revision gate."""
+    return await _validate_product_runtime(connection, stage_observer=stage_observer, successor=True)
+
+
+async def _validate_product_runtime(connection, *, stage_observer=None, successor=False):
     try:
         with _validation_stage(stage_observer, 'FOUNDATION'):
-            await validate_product_foundation(connection)
+            await (validate_route_economics_foundation if successor else validate_product_foundation)(connection)
         async with catalog_resolution(connection):
             with _validation_stage(stage_observer, 'PRODUCT_RLS_ENCODING'):
                 if await connection.scalar(text("SELECT pg_catalog.current_setting('server_encoding') = 'UTF8' AND (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('tasks','executions') AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity) = 2")) is not True:
