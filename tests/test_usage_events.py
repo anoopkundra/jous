@@ -97,13 +97,17 @@ class UsageNormalizationTests(unittest.TestCase):
             organization_id=self.task.organization_id, project_id=self.task.project_id,
             actor_user_id=self.task.actor_user_id, dispatch_claim_id=self.task.dispatch_claim_id,
             logical_model_id=self.task.logical_model_id, logical_model_version=2,
-            selected_route_id="route-a", selected_route_version=3)
-        bound = normalize_execution(self.task, self.execution, route_decision=decision)
+            selected_route_id="route-a", selected_route_version=1)
+        dispatch_route = SimpleNamespace(route_id="route-a", supplier_id=self.task.supplier_id,
+            underlying_provider=self.task.underlying_provider)
+        bound = normalize_execution(self.task, self.execution, route_decision=decision,
+                                    dispatch_route=dispatch_route)
         self.assertEqual(bound.route_decision_id, self.task.id)
-        self.assertEqual((bound.logical_model_version, bound.route_version), (2, 3))
+        self.assertEqual((bound.logical_model_version, bound.route_version), (2, 1))
         decision.dispatch_claim_id = uuid4()
         with self.assertRaises(UsageNormalizationError):
-            normalize_execution(self.task, self.execution, route_decision=decision)
+            normalize_execution(self.task, self.execution, route_decision=decision,
+                                dispatch_route=dispatch_route)
 
     def test_execution_tenant_project_actor_claim_and_identity_are_bound(self):
         for field, value in (

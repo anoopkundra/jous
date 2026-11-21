@@ -80,6 +80,53 @@ class SQLUnit:
         return await self.session.scalar(select(Execution).where(Execution.task_id == task.id,
             Execution.organization_id == self.project.organization_id, Execution.project_id == self.project.id))
 
+    async def dispatch_context(self, task):
+        """Read the exact persisted decision and bound non-secret authority in the auth transaction."""
+        result = await self.session.execute(text("""SELECT
+            d.task_id,d.organization_id,d.project_id,d.actor_user_id,d.dispatch_claim_id,
+            d.logical_model_id,d.logical_model_version,d.selected_route_id,d.selected_route_version,
+            d.pricing_version_id,d.funding_authority_id,d.funding_authority_version,d.funding_authority_digest,
+            p.pricing_version_id AS pricing_authority_id,p.route_id AS pricing_route_id,
+            p.route_version AS pricing_route_version,p.pricing_status,
+            EXISTS (SELECT 1 FROM public.route_pricing_revocations x
+                    WHERE x.pricing_version_id=d.pricing_version_id) AS pricing_is_revoked,
+            a.scope AS authority_scope,a.organization_id AS authority_organization_id,
+            a.supplier_id AS authority_supplier_id,a.route_id AS authority_route_id,
+            a.route_version AS authority_route_version,a.credential_authority_ref,
+            a.authority_digest AS authority_digest
+          FROM public.route_decisions d
+          LEFT JOIN public.supplier_funding_authorities a
+            ON a.funding_authority_id=d.funding_authority_id
+           AND a.authority_version=d.funding_authority_version
+          LEFT JOIN public.route_pricing_versions p
+            ON p.pricing_version_id=d.pricing_version_id AND p.route_id=d.selected_route_id
+           AND p.route_version=d.selected_route_version AND p.service_tier=d.service_tier
+           AND p.currency=d.currency AND p.billing_basis=d.billing_basis
+         WHERE d.task_id=:task_id"""), {"task_id": task.id})
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None, None
+        decision = {name: row[name] for name in (
+            "task_id","organization_id","project_id","actor_user_id","dispatch_claim_id",
+            "logical_model_id","logical_model_version","selected_route_id","selected_route_version",
+            "pricing_version_id","funding_authority_id","funding_authority_version","funding_authority_digest")}
+        decision.update({name: row[name] for name in (
+            "pricing_authority_id","pricing_route_id","pricing_route_version","pricing_status","pricing_is_revoked")})
+        authority = None
+        if row["funding_authority_id"] is not None:
+            authority = {
+                "funding_authority_id": row["funding_authority_id"],
+                "authority_version": row["funding_authority_version"],
+                "authority_digest": row["authority_digest"],
+                "scope": row["authority_scope"],
+                "organization_id": row["authority_organization_id"],
+                "supplier_id": row["authority_supplier_id"],
+                "route_id": row["authority_route_id"],
+                "route_version": row["authority_route_version"],
+                "credential_authority_ref": row["credential_authority_ref"],
+            }
+        return decision, authority
+
     async def claim(self, values):
         validate_claim(values)
         for name, maximum in [('context_package',32768),('request_parameters',8192),('token_bound_evidence',8192)]:
@@ -106,7 +153,11 @@ class SQLUnit:
             selected_route_id,selected_route_version FROM public.route_decisions WHERE task_id=:task_id"""),
             {"task_id": task.id})).mappings().one_or_none()
         decision = SimpleNamespace(**decision_row) if decision_row is not None else None
-        event = normalize_execution(task, row, route_decision=decision)
+        dispatch_route = None
+        if decision is not None:
+            from jous_supply.registry import resolve
+            dispatch_route = resolve(task.logical_model_id, decision.selected_route_id)
+        event = normalize_execution(task, row, route_decision=decision, dispatch_route=dispatch_route)
         await persist_usage_event(self.session, event)
         return row
 

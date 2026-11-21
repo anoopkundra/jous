@@ -8,6 +8,11 @@ from .usage_event_models import usage_events
 
 
 REVISION = "0008_usage_event_acl_hardening"
+ECONOMIC_PROCESSOR_USAGE_COLUMNS = frozenset({
+    "usage_event_id", "organization_id", "project_id", "actor_user_id", "task_id",
+    "dispatch_claim_id", "execution_id", "supplier_id", "input_tokens", "output_tokens",
+    "route_decision_id", "usage_status", "evidence_sha256", "observed_at",
+})
 TABLE_SQL = """SELECT pg_catalog.pg_get_userbyid(c.relowner)::text,c.relkind::text,
  c.relrowsecurity,c.relforcerowsecurity FROM pg_catalog.pg_class c
  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
@@ -39,7 +44,8 @@ DEFAULT_ACL_SQL = """SELECT count(*) FROM pg_catalog.pg_default_acl d
  (0,(SELECT oid FROM pg_catalog.pg_namespace WHERE nspname='public'))
  AND a.grantee IN (0,(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='anon'),
  (SELECT oid FROM pg_catalog.pg_roles WHERE rolname='authenticated'),
- (SELECT oid FROM pg_catalog.pg_roles WHERE rolname='service_role'))"""
+ (SELECT oid FROM pg_catalog.pg_roles WHERE rolname='service_role'),
+ (SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))"""
 ROLE_RELATION_AUTHORITY_SQL = """SELECT count(*) FROM
  (VALUES ('anon'),('authenticated'),('service_role'),('jous_runtime'),('jous_security_reader')) r(name)
  CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),
@@ -203,6 +209,98 @@ async def validate_usage_event_runtime(connection, *, stage_observer=None):
         raise DatabaseUnavailable("Usage-event database safety check failed") from None
 
 
+async def validate_economic_usage_event_runtime(connection, *, stage_observer=None):
+    """Validate the unchanged V1.4B contract plus exact V1.4C source reads."""
+    try:
+        await validate_route_economics_runtime(connection,
+            expected_revision="0009_economic_ledger_core", usage_events=True,
+            economic_processor=True, stage_observer=stage_observer)
+        relation = (await connection.execute(text(TABLE_SQL))).one_or_none()
+        if relation != ("postgres", "r", True, True):
+            raise ValueError()
+        # Reuse the frozen 0008 checks through a narrow catalog adapter: only
+        # processor read columns/policy are additive in 0009.
+        columns = {name: (sql_type, bool(not_null), " ".join(default.split()) if default else None)
+                   for name, sql_type, not_null, default in
+                   (await connection.execute(text(COLUMN_SQL))).all()}
+        expected = _expected_columns()
+        if set(columns) != set(expected):
+            raise ValueError()
+        for name, (sql_type, not_null, default) in expected.items():
+            actual_type, actual_not_null, actual_default = columns[name]
+            if not _types_equivalent(sql_type, actual_type) or actual_not_null != not_null:
+                raise ValueError()
+            if name == "recorded_at":
+                if not actual_default or "statement_timestamp" not in actual_default:
+                    raise ValueError()
+            elif actual_default is not None:
+                raise ValueError()
+        constraints = {}
+        for name, kind, deferrable, validated in (await connection.execute(text(CONSTRAINT_SQL))).all():
+            if deferrable or not validated:
+                raise ValueError()
+            constraints[name] = kind
+        if constraints != _expected_constraints():
+            raise ValueError()
+        policies = (await connection.execute(text(POLICY_SQL))).all()
+        if len(policies) != 3:
+            raise ValueError()
+        runtime_policies = {name: (command, permissive, tuple(roles), using, check)
+                            for name, command, permissive, roles, using, check in policies
+                            if name in {"jous_usage_events_select", "jous_usage_events_insert"}}
+        if set(runtime_policies) != {"jous_usage_events_select", "jous_usage_events_insert"}:
+            raise ValueError()
+        for name, (command, permissive, roles, using, check) in runtime_policies.items():
+            if (not permissive or tuple(roles) != ("jous_runtime",)
+                    or command != ("r" if name.endswith("_select") else "a")
+                    or not _policy_is_bounded(name, using, check)):
+                raise ValueError()
+        processor_policy = next((row for row in policies if row[0] == "jous_usage_events_economic_select"), None)
+        if processor_policy != ("jous_usage_events_economic_select", "r", True,
+                                ["jous_economic_processor"], "true", None):
+            raise ValueError()
+        if await connection.scalar(text(RELATION_ACL_SQL)) != 0:
+            raise ValueError()
+        if await connection.scalar(text(DEFAULT_ACL_SQL)) != 0:
+            raise ValueError()
+        if await connection.scalar(text("""SELECT count(*) FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_attribute x ON x.attrelid=c.oid,
+            LATERAL pg_catalog.aclexplode(x.attacl) a WHERE n.nspname='public' AND c.relname='usage_events'
+            AND x.attnum>0 AND NOT x.attisdropped AND a.is_grantable AND
+            a.grantee NOT IN (c.relowner,(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_runtime'),
+                              (SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))""")) != 0:
+            raise ValueError()
+        privileges = (await connection.execute(text("""SELECT a.attname::text,
+            pg_catalog.has_column_privilege('jous_runtime',c.oid,a.attnum,'SELECT'),
+            pg_catalog.has_column_privilege('jous_runtime',c.oid,a.attnum,'INSERT'),
+            pg_catalog.has_column_privilege('jous_runtime',c.oid,a.attnum,'UPDATE'),
+            pg_catalog.has_column_privilege('jous_runtime',c.oid,a.attnum,'REFERENCES'),
+            pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'SELECT'),
+            pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'INSERT'),
+            pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'UPDATE'),
+            pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'REFERENCES')
+            FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+            JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE n.nspname='public' AND c.relname='usage_events'
+            AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum"""))).all()
+        if len(privileges) != len(usage_events.columns):
+            raise ValueError()
+        for (name, select, insert, update, references, processor_select, processor_insert,
+             processor_update, processor_references) in privileges:
+            expected_insert = name != "recorded_at"
+            if (select, insert, update, references) != (True, expected_insert, False, False):
+                raise ValueError()
+            if (processor_select, processor_insert, processor_update, processor_references) != (
+                    name in ECONOMIC_PROCESSOR_USAGE_COLUMNS, False, False, False):
+                raise ValueError()
+        if set((await connection.execute(text(INDEX_SQL))).scalars()) != {
+                "pk_usage_events", "uq_usage_events_source_identity",
+                "uq_usage_events_single_successor", "uq_usage_events_binding",
+                "ix_usage_events_project_recorded"}:
+            raise ValueError()
+    except Exception:
+        raise DatabaseUnavailable("Economic usage-event source validation failed") from None
+
+
 async def validate_current_product_runtime(connection, *, stage_observer=None):
     """Require the exact schema revision needed by this application build."""
     try:
@@ -213,3 +311,18 @@ async def validate_current_product_runtime(connection, *, stage_observer=None):
         return await validate_usage_event_runtime(connection, stage_observer=stage_observer)
     except Exception:
         raise DatabaseUnavailable("Product database revision is not supported") from None
+
+
+async def validate_current_economic_runtime(connection, *, stage_observer=None):
+    """Require 0009 while preserving the exact earlier runtime contracts."""
+    try:
+        revisions = (await connection.execute(text(
+            "SELECT version_num::text FROM public.alembic_version ORDER BY version_num"))).scalars().all()
+        if revisions != ["0009_economic_ledger_core"]:
+            raise ValueError()
+        result = await validate_economic_usage_event_runtime(connection, stage_observer=stage_observer)
+        from .economic_ledger_validation import validate_economic_ledger_catalog
+        await validate_economic_ledger_catalog(connection)
+        return result
+    except Exception:
+        raise DatabaseUnavailable("Economic product database revision is not supported") from None

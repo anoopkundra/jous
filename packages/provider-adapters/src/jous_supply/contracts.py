@@ -1,5 +1,5 @@
 """Supplier-neutral, bounded execution evidence. No credentials in value objects."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -16,6 +16,29 @@ class ExecutionRequest:
     user: str
     deadline: datetime
     max_tokens: int = 1024
+    route_id: str | None = None
+    supplier_id: str | None = None
+    supplier_native_model_id: str | None = None
+    underlying_provider: str | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedSupplierCredential:
+    """Server-resolved dispatch credential; only its opaque account ref is evidence."""
+    credential_authority_ref: str
+    supplier_id: str
+    underlying_provider: str
+    secret: str = field(repr=False, compare=False)
+
+    def __post_init__(self):
+        if (not isinstance(self.credential_authority_ref, str) or not self.credential_authority_ref.strip()
+                or len(self.credential_authority_ref.encode("utf-8")) > 255
+                or not isinstance(self.supplier_id, str) or not self.supplier_id.strip()
+                or len(self.supplier_id.encode("utf-8")) > 255
+                or not isinstance(self.underlying_provider, str) or not self.underlying_provider.strip()
+                or len(self.underlying_provider.encode("utf-8")) > 255
+                or not isinstance(self.secret, str) or not self.secret):
+            raise ValueError("Invalid resolved supplier credential")
 
 
 @dataclass(frozen=True)
@@ -32,6 +55,7 @@ class Outcome:
     error_code: str | None = None
     request_started_at: datetime | None = None
     response_received_at: datetime | None = None
+    credential_authority_ref: str | None = None
 
     def __post_init__(self):
         if self.status not in DISPOSITIONS or self.usage_status not in ('available', 'partial', 'unavailable'):
@@ -40,7 +64,7 @@ class Outcome:
             raise ValueError('Invalid outcome')
         if self.response_text is not None and len(self.response_text.encode('utf-8')) > 65536:
             raise ValueError('Invalid outcome')
-        for value in (self.reported_model_id,self.reported_provider_id,self.provider_request_id,self.provider_response_id,self.finish_reason):
+        for value in (self.reported_model_id,self.reported_provider_id,self.provider_request_id,self.provider_response_id,self.finish_reason,self.credential_authority_ref):
             if value is not None and (not isinstance(value,str) or not value.strip() or len(value.encode('utf-8'))>255):
                 raise ValueError('Invalid evidence identifier')
         for value in (self.request_started_at,self.response_received_at):
@@ -61,7 +85,8 @@ class Outcome:
             raise ValueError('Invalid ambiguity')
         if self.error_code == 'not_dispatched' and any(v is not None for v in (
             self.request_started_at, self.response_received_at, self.reported_model_id,
-            self.reported_provider_id, self.provider_request_id, self.provider_response_id, self.usage)):
+            self.reported_provider_id, self.provider_request_id, self.provider_response_id,
+            self.credential_authority_ref, self.usage)):
             raise ValueError('Invalid non-dispatch')
 
 

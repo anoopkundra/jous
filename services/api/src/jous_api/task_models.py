@@ -11,14 +11,16 @@ TASK_COLUMNS = ('id','organization_id','project_id','actor_user_id','client_requ
     'dispatch_claim_id','dispatch_deadline_at','created_at')
 EXECUTION_COLUMNS = ('id','task_id','organization_id','project_id','actor_user_id','dispatch_claim_id','status',
     'response_text','reported_model_id','reported_provider_id','provider_request_id','provider_response_id',
-    'finish_reason','usage','usage_status','error_code','request_started_at','response_received_at','recorded_at')
+    'finish_reason','usage','usage_status','error_code','request_started_at','response_received_at',
+    'credential_authority_ref','recorded_at')
 TASK_SELECT_COLUMNS = TASK_COLUMNS
 TASK_INSERT_COLUMNS = TASK_COLUMNS[:-1]
 EXECUTION_SELECT_COLUMNS = EXECUTION_COLUMNS
 EXECUTION_INSERT_COLUMNS = EXECUTION_COLUMNS[:-1]
 TASK_IDENTIFIERS = ('logical_model_id','supplier_id','supplier_native_model_id','underlying_provider',
                     'admission_version','template_branch','token_bound_method')
-EXECUTION_IDENTIFIERS = ('reported_model_id','reported_provider_id','provider_request_id','provider_response_id','finish_reason')
+EXECUTION_IDENTIFIERS = ('reported_model_id','reported_provider_id','provider_request_id','provider_response_id',
+                         'finish_reason')
 
 
 def required_identifier(name):
@@ -66,6 +68,7 @@ EXECUTION_CHECKS = {
      "(error_code IS DISTINCT FROM 'not_dispatched' OR (request_started_at IS NULL AND response_received_at IS NULL AND reported_model_id IS NULL AND reported_provider_id IS NULL AND provider_request_id IS NULL AND provider_response_id IS NULL AND finish_reason IS NULL AND usage IS NULL AND usage_status = 'unavailable'))",
  'ck_executions_timestamp_order': 'isfinite(recorded_at) AND (request_started_at IS NULL OR (isfinite(request_started_at) AND recorded_at >= request_started_at)) AND '
      '(response_received_at IS NULL OR (isfinite(response_received_at) AND request_started_at IS NOT NULL AND response_received_at >= request_started_at AND recorded_at >= response_received_at))',
+ 'ck_executions_credential_authority_ref': 'credential_authority_ref IS NULL OR (length(btrim(credential_authority_ref)) > 0 AND octet_length(credential_authority_ref) <= 255)',
 }
 
 
@@ -73,7 +76,7 @@ def table_columns(names, uuid_names, hashes=(), json_names=(), integers=(), time
     for name in names:
         typ = (UUID(as_uuid=True) if name in uuid_names else BYTEA() if name in hashes else JSONB()
                if name in json_names else sa.Integer() if name in integers else sa.DateTime(timezone=True)
-               if name in timestamps else sa.Text())
+               if name in timestamps else sa.String(255) if name == 'credential_authority_ref' else sa.Text())
         yield sa.Column(name, typ, nullable=name in nullable,
                         server_default=sa.text('statement_timestamp()') if name == default else None)
 
@@ -95,7 +98,8 @@ sa.Index('ix_tasks_project_created_id',tasks.c.organization_id,tasks.c.project_i
 executions = sa.Table('executions', Base.metadata,
     *table_columns(EXECUTION_COLUMNS, ('id','task_id','organization_id','project_id','actor_user_id','dispatch_claim_id'),
         json_names=('usage',), timestamps=('request_started_at','response_received_at','recorded_at'),
-        nullable=('response_text',*EXECUTION_IDENTIFIERS,'usage','error_code','request_started_at','response_received_at'), default='recorded_at'),
+        nullable=('response_text',*EXECUTION_IDENTIFIERS,'usage','error_code','request_started_at','response_received_at',
+                  'credential_authority_ref'), default='recorded_at'),
     sa.PrimaryKeyConstraint('id', name='pk_executions'),
     sa.UniqueConstraint('task_id',name='uq_executions_task_id'),
     sa.UniqueConstraint('dispatch_claim_id',name='uq_executions_dispatch_claim_id'),

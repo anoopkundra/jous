@@ -101,6 +101,7 @@ def privilege_stages():
         kwonlyargs=[], kw_defaults=[], defaults=[]), body=stages, decorator_list=[])
     module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
     namespace = dict(vars(route)); namespace['stage_observer'] = None
+    namespace['economic_processor'] = False
     exec(compile(module, '<validator privilege stages>', 'exec'), namespace)
     return namespace['run']
 
@@ -125,9 +126,9 @@ class SuccessorPrivilegeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.run_stages = privilege_stages()
         self.rows = [
-            ('route_pricing_versions', 'pricing_version_id', True, False, False, False, False, False),
-            ('route_pricing_revocations', 'pricing_version_id', True, False, False, False, False, False),
-            ('route_decisions', 'task_id', True, True, False, False, False, False),
+            ('route_pricing_versions', 'pricing_version_id', True, False, False, False, False, False, False, False, False, False),
+            ('route_pricing_revocations', 'pricing_version_id', True, False, False, False, False, False, False, False, False, False),
+            ('route_decisions', 'task_id', True, True, False, False, False, False, False, False, False, False),
         ]
 
     async def test_expected_privileges_pass(self):

@@ -68,7 +68,7 @@ class NormalizedUsageEvent:
     supersedes_usage_event_id: UUID | None
 
 
-def normalize_execution(task, execution, *, route_decision=None,
+def normalize_execution(task, execution, *, route_decision=None, dispatch_route=None,
                         normalizer_version: str = NORMALIZER_VERSION,
                         supersedes_usage_event_id: UUID | None = None) -> NormalizedUsageEvent:
     """Normalize only persisted execution evidence; never derive missing counts."""
@@ -114,9 +114,17 @@ def normalize_execution(task, execution, *, route_decision=None,
     logical_version = route_decision.logical_model_version if route_decision is not None else None
     selected_route = route_decision.selected_route_id if route_decision is not None else route_id
     route_version = route_decision.selected_route_version if route_decision is not None else None
-    if route_decision is not None and (task.logical_model_id != route_decision.logical_model_id
-                                      or route_id != route_decision.selected_route_id):
-        raise UsageNormalizationError("Route decision identity differs from task")
+    supplier_id = task.supplier_id
+    underlying_provider = task.underlying_provider
+    if route_decision is not None:
+        if task.logical_model_id != route_decision.logical_model_id:
+            raise UsageNormalizationError("Route decision logical model differs from task")
+        if dispatch_route is None or dispatch_route.route_id != route_decision.selected_route_id:
+            raise UsageNormalizationError("Persisted RouteDecision has no authoritative dispatch route")
+        if route_version != 1:
+            raise UsageNormalizationError("Unsupported persisted dispatch route version")
+        supplier_id = dispatch_route.supplier_id
+        underlying_provider = dispatch_route.underlying_provider
 
     # Execution rows are immutable and terminal/unique per task. This explicit
     # source revision is therefore stable and can also be checked in SQL; the
@@ -138,8 +146,8 @@ def normalize_execution(task, execution, *, route_decision=None,
         "logical_model_version": logical_version,
         "route_id": selected_route,
         "route_version": route_version,
-        "supplier_id": task.supplier_id,
-        "underlying_provider": task.underlying_provider,
+        "supplier_id": supplier_id,
+        "underlying_provider": underlying_provider,
         "reported_provider_id": execution.reported_provider_id,
         **usage,
         "usage_status": status.upper(),
@@ -159,7 +167,7 @@ def normalize_execution(task, execution, *, route_decision=None,
         execution_id=execution.id, route_decision_id=decision_id,
         logical_model_id=task.logical_model_id, logical_model_version=logical_version,
         route_id=selected_route, route_version=route_version,
-        supplier_id=task.supplier_id, underlying_provider=task.underlying_provider,
+        supplier_id=supplier_id, underlying_provider=underlying_provider,
         reported_provider_id=execution.reported_provider_id,
         **usage, usage_status=status.upper(), source_type=SOURCE_TYPE,
         source_reference=str(execution.id), source_revision=source_revision,

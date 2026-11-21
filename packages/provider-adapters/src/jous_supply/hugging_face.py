@@ -10,7 +10,7 @@ DESTINATION = 'https://router.huggingface.co/v1/chat/completions'
 
 
 class HuggingFaceAdapter:
-    async def execute(self, request: ExecutionRequest):
+    async def execute(self, request: ExecutionRequest, credential=None):
         # No credential lookup or socket can occur before this mandatory gate.
         require_real_eligibility(HF_ROUTE)
 

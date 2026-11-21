@@ -82,7 +82,13 @@ class ValidatorTests(unittest.IsolatedAsyncioTestCase):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         self.assertEqual(module.down_revision,'0002_runtime_rls')
         text='\n'.join(module.UPGRADE_SQL)
-        for name in [c.name for t in (tasks,executions) for c in t.constraints]:self.assertIn(name,text)
+        additive_execution_constraint='ck_executions_credential_authority_ref'
+        for name in [c.name for t in (tasks,executions) for c in t.constraints
+                     if c.name != additive_execution_constraint]:self.assertIn(name,text)
+        # Dispatch provenance was added forward-only by V1.4C 0009, not by the
+        # frozen V1.2 execution migration whose literal contract is checked here.
+        economic=Path('services/api/migrations/versions/0009_economic_ledger_core.py').read_text()
+        self.assertIn(f'ADD CONSTRAINT {additive_execution_constraint}',economic)
         self.assertEqual(text.count('CREATE POLICY '),4);self.assertNotIn('NOT EXISTS',text)
         self.assertNotIn('SECURITY DEFINER',text)
 

@@ -12,7 +12,8 @@ from sqlalchemy import text, CheckConstraint, ForeignKeyConstraint, UniqueConstr
 from sqlalchemy.dialects.postgresql import dialect
 from .database import (DatabaseUnavailable, validate_product_foundation,
                        validate_route_economics_foundation,
-                       validate_usage_events_foundation)
+                       validate_usage_events_foundation,
+                       validate_economic_ledger_foundation)
 from .runtime_resolution import catalog_resolution
 from .task_models import tasks, executions, POLICIES, TASK_COLUMNS, EXECUTION_COLUMNS
 from .product_policy_canonicalization import canonical_policy_expression
@@ -198,7 +199,7 @@ _ROUTE_ECONOMICS_CHECKS = {
         'ck_route_decisions_hash', 'ck_route_decisions_snapshot_digest',
         'ck_route_decisions_currency', 'ck_route_decisions_route_version',
         'ck_route_decisions_token_bounds', 'ck_route_decisions_estimate',
-        'ck_route_decisions_identity')
+        'ck_route_decisions_identity', 'ck_route_decisions_funding_binding')
 }
 
 _ROUTE_ECONOMICS_TEXT_COLUMNS = {
@@ -772,11 +773,18 @@ async def validate_usage_events_product_runtime(connection, *, stage_observer=No
                                            successor=True, usage_events=True)
 
 
+async def validate_economic_ledger_product_runtime(connection, *, stage_observer=None):
+    """Run frozen product invariants at the exact V1.4C successor revision."""
+    return await _validate_product_runtime(connection, stage_observer=stage_observer,
+                                           successor=True, usage_events=True, economic=True)
+
+
 async def _validate_product_runtime(connection, *, stage_observer=None, successor=False,
-                                    usage_events=False):
+                                    usage_events=False, economic=False):
     try:
         with _validation_stage(stage_observer, 'FOUNDATION'):
-            foundation = (validate_usage_events_foundation if usage_events else
+            foundation = (validate_economic_ledger_foundation if economic else
+                          validate_usage_events_foundation if usage_events else
                           validate_route_economics_foundation if successor else validate_product_foundation)
             await foundation(connection)
         async with catalog_resolution(connection):

@@ -10,6 +10,8 @@ from jous_supply.registry import resolve, require_real_eligibility, catalog_dige
 from jous_supply.token_budget import count, BRANCH
 from .task_context import assemble, bounded
 from .task_service import dto, request_hash, SubmissionResult
+from .supplier_dispatch import (DispatchAuthorityError, RejectingCredentialResolver,
+                                plan_dispatch, require_credential_match)
 
 
 class OperationBudget:
@@ -25,11 +27,13 @@ class OperationBudget:
 
 
 class ExecutionService:
-    def __init__(self, store, adapter, *, admission=require_real_eligibility, clock=lambda: datetime.now(timezone.utc), counter=count, monotonic=time.monotonic):
+    def __init__(self, store, adapter, *, credential_resolver=None, admission=require_real_eligibility,
+                 clock=lambda: datetime.now(timezone.utc), counter=count, monotonic=time.monotonic):
         # Alternate collaborators are dependency-injected in offline tests only.
         # Product composition always uses these defaults and the denied HF adapter.
         self.monotonic = monotonic
         self.store, self.adapter, self.admission, self.clock, self.counter = store, adapter, admission, clock, counter
+        self.credential_resolver = credential_resolver or RejectingCredentialResolver()
 
     async def submit(self, principal, project_id, data):
         operation_end = OperationBudget(self.clock,self.monotonic)
@@ -84,12 +88,18 @@ class ExecutionService:
         if not inserted:
             return SubmissionResult(await self.read(principal,project_id,task_id),200)
         try:
+            credential = None
+            plan = None
             async with self.store.unit(principal,project_id,execute=True) as unit:
                 task = await unit.task(task_id)
                 if unit.actor != task.actor_user_id: raise HTTPException(403,'Task unavailable')
                 if await unit.outcome(task) is not None:
                     return SubmissionResult(dto(task, await unit.outcome(task), now=self.clock()),200)
-                self.admission(resolve(task.logical_model_id, task.request_parameters['route_id']))
+                dispatch_context = getattr(unit, "dispatch_context", None)
+                decision, authority = ((None, None) if dispatch_context is None
+                                       else await dispatch_context(task))
+                plan = plan_dispatch(task, decision, authority)
+                self.admission(plan.route)
                 if self.clock() >= task.dispatch_deadline_at: raise RouteUnavailable()
                 remaining = self.remaining(operation_end)
                 # Five seconds is reserved for authorized finalization and readback.
@@ -97,7 +107,11 @@ class ExecutionService:
                 if remaining < 6: raise RouteUnavailable()
                 supplier_end = self.monotonic() + min(20,remaining-5)
                 deadline = min(task.dispatch_deadline_at, self.clock()+timedelta(seconds=min(20,remaining-5)))
-        except RouteUnavailable:
+            # Resolve only after the authorized database transaction is closed.
+            if plan.funding_authority is not None:
+                credential = await self.credential_resolver.resolve(plan.funding_authority)
+                require_credential_match(plan, credential)
+        except (RouteUnavailable, DispatchAuthorityError, ValueError):
             return SubmissionResult(await self._finalize(principal,project_id,task_id,Outcome('known_error',error_code='not_dispatched'),operation_end),201)
         # No store/session/connection scope exists across supplier I/O.
         remaining = self.remaining(operation_end)
@@ -108,14 +122,28 @@ class ExecutionService:
         # decreasing monotonic allowance, never reconstructed from this timestamp.
         deadline = min(deadline, self.clock()+timedelta(seconds=supplier_timeout))
         dispatch_started = self.clock()
+        request = ExecutionRequest(system,user,deadline,
+            route_id=plan.route.route_id, supplier_id=plan.route.supplier_id,
+            supplier_native_model_id=plan.route.supplier_native_model_id,
+            underlying_provider=plan.route.underlying_provider)
         try:
             async with asyncio.timeout(supplier_timeout):
-                outcome = await self.adapter.execute(ExecutionRequest(system,user,deadline))
+                outcome = (await self.adapter.execute(request, credential) if credential is not None
+                           else await self.adapter.execute(request))
         except TimeoutError:
-            outcome = Outcome('unknown',error_code='provider_timeout',request_started_at=dispatch_started)
+            outcome = Outcome('unknown',error_code='provider_timeout',request_started_at=dispatch_started,
+                              credential_authority_ref=None if credential is None else credential.credential_authority_ref)
         except Exception:
             # Unknown adapter outcome is NEVER inferred to be non-execution.
-            outcome = Outcome('unknown',error_code='transport_ambiguous',request_started_at=dispatch_started)
+            outcome = Outcome('unknown',error_code='transport_ambiguous',request_started_at=dispatch_started,
+                              credential_authority_ref=None if credential is None else credential.credential_authority_ref)
+        else:
+            returned_ref = outcome.credential_authority_ref
+            expected_ref = None if credential is None else credential.credential_authority_ref
+            if returned_ref != expected_ref:
+                # The supplier call may have happened, so retain the frozen unknown-gap
+                # behavior rather than creating an Execution with false provenance.
+                raise HTTPException(503,'Execution outcome unavailable') from None
         result = await self._finalize(principal,project_id,task_id,outcome,operation_end)
         return SubmissionResult(result,202 if result['status']=='claimed' else 201)
 

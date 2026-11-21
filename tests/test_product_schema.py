@@ -7,13 +7,16 @@ from sqlalchemy.dialects.postgresql import UUID,BYTEA,JSONB
 from jous_api.models import Base,Project
 from jous_api.task_models import Task,Execution,tasks,executions,TASK_COLUMNS,EXECUTION_COLUMNS,TASK_CHECKS,EXECUTION_CHECKS
 from jous_api.usage_event_models import usage_events
+from jous_api.economic_models import (supplier_funding_authorities, economic_receipts,
+                                      ledger_accounts, ledger_transactions, ledger_entries)
 from test_schema_foundation import INI
 
 
 class ProductSchemaTests(unittest.TestCase):
     def test_closed_v14_table_composition_and_orders(self):
         self.assertEqual(set(Base.metadata.tables),{'public.'+n for n in
-            ('users','organizations','organization_memberships','projects','tasks','executions','usage_events')})
+            ('users','organizations','organization_memberships','projects','tasks','executions','usage_events',
+             'supplier_funding_authorities','economic_receipts','ledger_accounts','ledger_transactions','ledger_entries')})
         self.assertEqual(tuple(tasks.columns.keys()),TASK_COLUMNS)
         self.assertEqual(tuple(executions.columns.keys()),EXECUTION_COLUMNS)
     def test_no_record_mutability_or_client_defaults(self):
@@ -28,7 +31,8 @@ class ProductSchemaTests(unittest.TestCase):
         self.assertNotIn('status',tasks.c)
         self.assertTrue(all(not c.nullable for c in tasks.c))
         nullable={'response_text','reported_model_id','reported_provider_id','provider_request_id',
-                  'provider_response_id','finish_reason','usage','error_code','request_started_at','response_received_at'}
+                  'provider_response_id','finish_reason','usage','error_code','request_started_at','response_received_at',
+                  'credential_authority_ref'}
         self.assertEqual({c.name for c in executions.c if c.nullable},nullable)
     def test_exact_types(self):
         for name in ('id','organization_id','project_id','actor_user_id','client_request_id','dispatch_claim_id'):
@@ -72,9 +76,10 @@ class ProductSchemaTests(unittest.TestCase):
         self.assertEqual(set(executions.indexes),set())
     def test_exact_linear_migration_chain(self):
         scripts=ScriptDirectory.from_config(Config(str(INI)))
-        self.assertEqual(scripts.get_heads(),['0008_usage_event_acl_hardening'])
+        self.assertEqual(scripts.get_heads(),['0009_economic_ledger_core'])
         revisions=list(scripts.walk_revisions())
         self.assertEqual([(r.revision,r.down_revision) for r in revisions],[
+            ('0009_economic_ledger_core','0008_usage_event_acl_hardening'),
             ('0008_usage_event_acl_hardening','0007_usage_events'),
             ('0007_usage_events','0006_snapshot_binding'),
             ('0006_snapshot_binding','0005_route_economics'),
@@ -95,6 +100,7 @@ class ProductSchemaTests(unittest.TestCase):
         self.assertLessEqual(len('0005_route_economics'),capacity)
         self.assertLessEqual(len('0006_snapshot_binding'),capacity)
         self.assertLessEqual(len('0008_usage_event_acl_hardening'),capacity)
+        self.assertLessEqual(len('0009_economic_ledger_core'),capacity)
 
     def test_usage_event_schema_is_additive_and_immutable_shaped(self):
         self.assertEqual(usage_events.primary_key.name,'pk_usage_events')

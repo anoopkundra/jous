@@ -21,6 +21,7 @@ from jous_supply.registry import resolve as resolve_source_route
 
 
 EXPECTED_REVISION = "0006_snapshot_binding"
+ECONOMIC_LEDGER_REVISION = "0009_economic_ledger_core"
 TABLES = {"route_pricing_versions", "route_pricing_revocations", "route_decisions"}
 EXPECTED_COLUMNS = {
     "route_pricing_versions": {
@@ -73,6 +74,14 @@ EXPECTED_POLICIES = {
     "jous_route_revocations_select": ("route_pricing_revocations", "r", ("jous_runtime",)),
     "jous_route_decisions_select": ("route_decisions", "r", ("jous_runtime",)),
     "jous_route_decisions_insert": ("route_decisions", "a", ("jous_runtime",)),
+}
+ECONOMIC_PROCESSOR_POLICIES = {
+    "jous_route_decisions_economic_select": (
+        "route_decisions", "r", ("jous_economic_processor",),
+        "EXISTS (SELECT 1 FROM usage_events u WHERE u.route_decision_id=route_decisions.task_id)"),
+    "jous_route_pricing_economic_select": (
+        "route_pricing_versions", "r", ("jous_economic_processor",),
+        "EXISTS (SELECT 1 FROM route_decisions d WHERE CAST(d.pricing_version_id AS text)=CAST(route_pricing_versions.pricing_version_id AS text))"),
 }
 
 REVISION_SQL = "SELECT version_num::text FROM public.alembic_version"
@@ -132,6 +141,12 @@ COLUMN_ACL_SQL = """SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.p
  WHERE n.nspname='public' AND c.relname IN ('route_pricing_versions','route_pricing_revocations','route_decisions')
  AND x.attnum>0 AND NOT x.attisdropped AND
  (a.is_grantable OR a.grantee<>(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_runtime'))"""
+ECONOMIC_COLUMN_ACL_SQL = """SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+ JOIN pg_catalog.pg_attribute x ON x.attrelid=c.oid,LATERAL pg_catalog.aclexplode(x.attacl) a
+ WHERE n.nspname='public' AND c.relname IN ('route_pricing_versions','route_pricing_revocations','route_decisions')
+ AND x.attnum>0 AND NOT x.attisdropped AND a.is_grantable
+ AND a.grantee NOT IN (c.relowner,(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_runtime'),
+ (SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))"""
 POLICY_SOURCE = {
     "jous_route_pricing_select": "pricing_status='approved' AND NOT EXISTS (SELECT 1 FROM public.route_pricing_revocations r WHERE r.pricing_version_id=route_pricing_versions.pricing_version_id)",
     "jous_route_revocations_select": "true",
@@ -158,7 +173,7 @@ def _squash(value: str | None) -> str | None:
     return re.sub(r"\s+", " ", value).strip() if value is not None else None
 
 
-def validate_route_economics_policy_rows(rows):
+def validate_route_economics_policy_rows(rows, *, economic_processor=False):
     """Validate exact V1.3 policy metadata and source/catalog semantic ASTs."""
     policies = {}
     for table, name, command, permissive, roles, using, check in rows:
@@ -167,10 +182,18 @@ def validate_route_economics_policy_rows(rows):
         using_ast = canonical_policy_expression(using, policy_name=name) if using is not None else None
         check_ast = canonical_policy_expression(check, policy_name=name) if check is not None else None
         policies[name] = (table, command, bool(permissive), tuple(roles), using_ast, check_ast)
-    if set(policies) != set(EXPECTED_POLICIES):
+    expected_policies = dict(EXPECTED_POLICIES)
+    if economic_processor:
+        expected_policies.update(ECONOMIC_PROCESSOR_POLICIES)
+    if set(policies) != set(expected_policies):
         raise ValueError()
-    for name, (table, command, roles) in EXPECTED_POLICIES.items():
-        source_ast = canonical_policy_expression(POLICY_SOURCE[name], policy_name=name)
+    for name, expected_row in expected_policies.items():
+        if economic_processor and name in ECONOMIC_PROCESSOR_POLICIES:
+            table, command, roles, source = expected_row
+        else:
+            table, command, roles = expected_row
+            source = POLICY_SOURCE[name]
+        source_ast = canonical_policy_expression(source, policy_name=name)
         expected = (table, command, True, roles,
                     source_ast if command == "r" else None,
                     source_ast if command == "a" else None)
@@ -239,6 +262,24 @@ def _source_check_asts():
     return expected
 
 
+def _economic_funding_check_ast():
+    """Load only the additive V1.4C funding CHECK from the unapplied successor source."""
+    migration_path = Path(__file__).resolve().parents[4] / "services/api/migrations/versions/0009_economic_ledger_core.py"
+    tree = ast.parse(migration_path.read_text(encoding="utf-8"), filename=str(migration_path))
+    assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "UPGRADE_SQL" for target in node.targets))
+    statements = ast.literal_eval(assignment.value)
+    statement = next(value for value in statements if "ADD CONSTRAINT ck_route_decisions_funding_binding" in value)
+    match = re.search(r"ck_route_decisions_funding_binding\s+CHECK\s*\((.*)\)\s*$", statement, re.I)
+    if not match:
+        raise ValueError()
+    signature = canonical_check_expression(match.group(1), "route_decisions",
+                                           "ck_route_decisions_funding_binding", route_economics=True)
+    if signature is None:
+        raise ValueError()
+    return tuple(signature)
+
+
 @contextmanager
 def _stage(observer, name):
     started = perf_counter()
@@ -255,7 +296,7 @@ def _stage(observer, name):
 
 async def validate_route_economics_runtime(connection, *, stage_observer=None,
                                            expected_revision=EXPECTED_REVISION,
-                                           usage_events=False):
+                                           usage_events=False, economic_processor=False):
     """Validate V1.3 additions after the unchanged V1.2 product validator.
 
     V1.3 CHECK constraints use the existing fail-closed CHECK AST with its
@@ -264,8 +305,10 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
     parser can prove any observed catalog representation equivalent.
     """
     try:
-        from .product_runtime_validation import validate_usage_events_product_runtime
-        product_validator = (validate_usage_events_product_runtime if usage_events
+        from .product_runtime_validation import (validate_usage_events_product_runtime,
+            validate_economic_ledger_product_runtime)
+        product_validator = (validate_economic_ledger_product_runtime if economic_processor else
+                             validate_usage_events_product_runtime if usage_events
                              else validate_route_economics_product_runtime)
         await product_validator(connection, stage_observer=stage_observer)
         async with catalog_resolution(connection):
@@ -279,15 +322,24 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
                 ):
                     raise ValueError()
             with _stage(stage_observer, "ROUTE_ECONOMICS_COLUMNS"):
+                expected_columns = {table: dict(values) for table, values in EXPECTED_COLUMNS.items()}
+                if expected_revision == ECONOMIC_LEDGER_REVISION:
+                    expected_columns["route_decisions"].update({
+                        "funding_authority_id": "uuid",
+                        "funding_authority_version": "integer",
+                        "funding_authority_digest": "bytea",
+                    })
                 columns = {table: {} for table in TABLES}
                 for table, column, sql_type, not_null, default in (await connection.execute(text(COLUMN_SQL))).all():
                     columns[table][column] = (sql_type, bool(not_null), _squash(default))
-                if {table: set(values) for table, values in columns.items()} != {table: set(values) for table, values in EXPECTED_COLUMNS.items()}:
+                if {table: set(values) for table, values in columns.items()} != {table: set(values) for table, values in expected_columns.items()}:
                     raise ValueError()
                 for table, values in columns.items():
                     for name, (sql_type, not_null, default) in values.items():
-                        expected_type = EXPECTED_COLUMNS[table][name]
-                        expected_not_null = name not in {"provider_request_fee_usd", "gateway_request_fee_usd"}
+                        expected_type = expected_columns[table][name]
+                        expected_not_null = name not in {"provider_request_fee_usd", "gateway_request_fee_usd",
+                                                         "funding_authority_id", "funding_authority_version",
+                                                         "funding_authority_digest"}
                         if (sql_type, not_null) != (expected_type, expected_not_null):
                             raise ValueError()
                         if name in {"created_at", "revoked_at"} and "statement_timestamp" not in (default or ""):
@@ -300,7 +352,11 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
                     if deferrable or not validated:
                         raise ValueError()
                     actual[table].add(name)
-                if actual != EXPECTED_CONSTRAINTS:
+                expected_constraints = {table: set(names) for table, names in EXPECTED_CONSTRAINTS.items()}
+                if expected_revision == ECONOMIC_LEDGER_REVISION:
+                    expected_constraints["route_decisions"].update({
+                        "fk_route_decisions_funding_authority", "ck_route_decisions_funding_binding"})
+                if actual != expected_constraints:
                     raise ValueError()
                 key_rows = (await connection.execute(text(KEY_CONSTRAINT_SQL))).all()
                 keys = {(table, name): (kind, target, tuple(local or ()), tuple(remote or ()),
@@ -317,6 +373,12 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
                     ("route_decisions", "fk_route_decisions_task_binding"): ("f", "tasks", ("task_id", "organization_id", "project_id", "actor_user_id", "dispatch_claim_id"), ("id", "organization_id", "project_id", "actor_user_id", "dispatch_claim_id"), "r", "r", False, False),
                     ("route_decisions", "fk_route_decisions_pricing"): ("f", "route_pricing_versions", ("pricing_version_id", "selected_route_id", "selected_route_version", "service_tier", "currency", "billing_basis"), ("pricing_version_id", "route_id", "route_version", "service_tier", "currency", "billing_basis"), "r", "r", False, False),
                 }
+                if expected_revision == ECONOMIC_LEDGER_REVISION:
+                    required_keys[("route_decisions", "fk_route_decisions_funding_authority")] = (
+                        "f", "supplier_funding_authorities",
+                        ("funding_authority_id", "funding_authority_version", "funding_authority_digest"),
+                        ("funding_authority_id", "authority_version", "authority_digest"),
+                        "r", "r", False, False)
                 if any(keys.get(key) != value for key, value in required_keys.items()):
                     raise ValueError()
                 check_expressions = {}
@@ -326,14 +388,18 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
                     if not validated or signature is None:
                         raise ValueError()
                     check_expressions[(table, name)] = tuple(signature)
-                if check_expressions != _source_check_asts():
+                expected_checks = _source_check_asts()
+                if expected_revision == ECONOMIC_LEDGER_REVISION:
+                    expected_checks[("route_decisions", "ck_route_decisions_funding_binding")] = _economic_funding_check_ast()
+                if check_expressions != expected_checks:
                     raise ValueError()
             with _stage(stage_observer, "ROUTE_ECONOMICS_INDEXES"):
                 if set((await connection.execute(text(INDEX_SQL))).scalars()) != EXPECTED_INDEXES:
                     raise ValueError()
             with _stage(stage_observer, "ROUTE_ECONOMICS_POLICIES"):
                 policy_rows = (await connection.execute(text(POLICY_SQL))).all()
-                validate_route_economics_policy_rows(policy_rows)
+                validate_route_economics_policy_rows(policy_rows,
+                    economic_processor=economic_processor)
             with _stage(stage_observer, "ROUTE_ECONOMICS_OVERLAP_GUARD"):
                 triggers = (await connection.execute(text(TRIGGER_SQL))).all()
                 if len(triggers) != 1:
@@ -349,7 +415,8 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
                         or "UPDATE" in str(trigger_def).upper() or "DELETE" in str(trigger_def).upper()):
                     raise ValueError()
             with _stage(stage_observer, "ROUTE_ECONOMICS_ACLS"):
-                if await connection.scalar(text(RELATION_ACL_SQL)) != 0 or await connection.scalar(text(COLUMN_ACL_SQL)) != 0:
+                column_acl_sql = ECONOMIC_COLUMN_ACL_SQL if economic_processor else COLUMN_ACL_SQL
+                if await connection.scalar(text(RELATION_ACL_SQL)) != 0 or await connection.scalar(text(column_acl_sql)) != 0:
                     raise ValueError()
             with _stage(stage_observer, "ROUTE_ECONOMICS_PRIVILEGES"):
                 rows = (await connection.execute(text("""SELECT c.relname::text,a.attname::text,
@@ -358,17 +425,35 @@ async def validate_route_economics_runtime(connection, *, stage_observer=None,
                   pg_catalog.has_column_privilege('jous_runtime',c.oid,a.attnum,'UPDATE'),
                   pg_catalog.has_column_privilege('jous_runtime',c.oid,a.attnum,'REFERENCES'),
                   pg_catalog.has_column_privilege('jous_security_reader',c.oid,a.attnum,'SELECT'),
-                  pg_catalog.has_column_privilege('jous_security_reader',c.oid,a.attnum,'INSERT')
+                  pg_catalog.has_column_privilege('jous_security_reader',c.oid,a.attnum,'INSERT'),
+                  pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'SELECT'),
+                  pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'INSERT'),
+                  pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'UPDATE'),
+                  pg_catalog.has_column_privilege('jous_economic_processor',c.oid,a.attnum,'REFERENCES')
                   FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
                   JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE n.nspname='public'
                     AND c.relname IN ('route_pricing_versions','route_pricing_revocations','route_decisions')
                     AND a.attnum>0 AND NOT a.attisdropped"""))).all()
                 if not rows:
                     raise ValueError()
-                for table, column, select, insert, update, references, reader_select, reader_insert in rows:
+                processor_select_columns = {
+                    "route_pricing_versions": {"pricing_version_id","route_id","route_version","service_tier","currency","billing_basis","input_price_per_1m","output_price_per_1m","provider_fee_applicable","provider_request_fee_usd","gateway_fee_applicable","gateway_request_fee_usd","fee_basis_verified","source_type","source_evidence_id","reviewed_at","effective_from","valid_until","pricing_status"},
+                    "route_decisions": {"task_id","organization_id","project_id","actor_user_id","dispatch_claim_id","pricing_version_id",
+                                         "selected_route_id","selected_route_version"},
+                    "route_pricing_revocations": set(),
+                }
+                if economic_processor:
+                    processor_select_columns["route_decisions"].update({
+                        "funding_authority_id", "funding_authority_version", "funding_authority_digest"})
+                for (table, column, select, insert, update, references, reader_select, reader_insert,
+                     processor_select, processor_insert, processor_update, processor_references) in rows:
                     expected_select = (table == "route_pricing_versions" or table == "route_pricing_revocations" and column == "pricing_version_id" or table == "route_decisions")
                     expected_insert = table == "route_decisions" and column != "created_at"
-                    if (select, insert, update, references, reader_select, reader_insert) != (expected_select, expected_insert, False, False, False, False):
+                    expected_processor_select = economic_processor and column in processor_select_columns[table]
+                    if (select, insert, update, references, reader_select, reader_insert,
+                        processor_select, processor_insert, processor_update, processor_references) != (
+                            expected_select, expected_insert, False, False, False, False,
+                            expected_processor_select, False, False, False):
                         raise ValueError()
                 forbidden = await connection.scalar(text("""SELECT NOT EXISTS (
                   SELECT 1 FROM (VALUES ('route_pricing_versions'),('route_pricing_revocations'),('route_decisions')) t(name)

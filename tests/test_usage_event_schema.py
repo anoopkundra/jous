@@ -100,7 +100,7 @@ class UsageEventMigrationTests(unittest.TestCase):
 
     def test_one_linear_migration_head(self):
         scripts = ScriptDirectory.from_config(Config(str(ROOT / "services/api/alembic.ini")))
-        self.assertEqual(scripts.get_heads(), ["0008_usage_event_acl_hardening"])
+        self.assertEqual(scripts.get_heads(), ["0009_economic_ledger_core"])
         self.assertEqual(scripts.get_revision("0007_usage_events").down_revision, "0006_snapshot_binding")
         self.assertEqual(scripts.get_revision("0008_usage_event_acl_hardening").down_revision,
                          "0007_usage_events")

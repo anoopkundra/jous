@@ -3,14 +3,14 @@ from .main import create_app
 from .product_api import router
 from .task_api import router as task_router
 from .database import Database
-from .usage_event_validation import validate_current_product_runtime
+from .usage_event_validation import validate_current_economic_runtime
 from .task_service import SQLTaskStore
 from .execution_service import ExecutionService
 from jous_supply.hugging_face import HuggingFaceAdapter
 
 
 def create_product_app(settings=None):
-    app = create_app(settings, database_factory=lambda settings: Database(settings, validator=validate_current_product_runtime))
+    app = create_app(settings, database_factory=lambda settings: Database(settings, validator=validate_current_economic_runtime))
     app.include_router(router)
     app.include_router(task_router)
     app.state.task_execution = ExecutionService(SQLTaskStore(app.state.database), HuggingFaceAdapter())

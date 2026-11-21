@@ -20,6 +20,7 @@ class Store:
     def __init__(self):
         self.project=SimpleNamespace(id=uuid4(),organization_id=uuid4(),name='My First Project',description='Context')
         self.actor=uuid4(); self.rows={}; self.outcomes={}; self.depth=0; self.calls=0
+        self.decision=None; self.funding_authority=None
         self.denied=set(); self.uncertain=False; self.fail_finalize=False
         self.lock=asyncio.Lock()
 
@@ -47,6 +48,9 @@ class Store:
         if key not in self.rows:raise HTTPException(404)
         return self.rows[key]
     async def outcome(self,task):return self.outcomes.get(task.id)
+    async def dispatch_context(self,task):
+        if callable(self.decision): return self.decision(task),self.funding_authority
+        return self.decision,self.funding_authority
     async def finalize(self,task,outcome):
         if self.fail_finalize:raise RuntimeError('Finalization unavailable')
         if task.id in self.outcomes:raise RuntimeError('Duplicate terminal outcome')
@@ -174,6 +178,88 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             return Outcome('succeeded',response_text='Result')
         self.adapter.execute.side_effect=execute
         await self.service.submit('mapped',self.store.project.id,data())
+
+    async def test_persisted_decision_and_funding_authority_drive_fake_dispatch(self):
+        from jous_supply.contracts import ResolvedSupplierCredential
+        authority_id=uuid4(); digest=b'a'*32
+        self.store.funding_authority={"funding_authority_id":authority_id,"authority_version":1,
+            "authority_digest":digest,"scope":"JOUS_GLOBAL","organization_id":None,
+            "supplier_id":HF_ROUTE.supplier_id,"route_id":HF_ROUTE.route_id,"route_version":1,
+            "credential_authority_ref":"ACCOUNT_A","cost_bearer":"JOUS_BORNE"}
+        def decision(task):
+            return {"task_id":task.id,"organization_id":task.organization_id,"project_id":task.project_id,
+                "actor_user_id":task.actor_user_id,"dispatch_claim_id":task.dispatch_claim_id,
+                "logical_model_id":task.logical_model_id,"selected_route_id":HF_ROUTE.route_id,
+                "selected_route_version":1,"pricing_version_id":"price-v1","pricing_authority_id":"price-v1",
+                "pricing_route_id":HF_ROUTE.route_id,"pricing_route_version":1,"pricing_status":"approved",
+                "pricing_is_revoked":False,"funding_authority_id":authority_id,"funding_authority_version":1,
+                "funding_authority_digest":digest}
+        self.store.decision=decision
+        credential=ResolvedSupplierCredential("ACCOUNT_A",HF_ROUTE.supplier_id,HF_ROUTE.underlying_provider,"fake-secret-v1")
+        resolver=SimpleNamespace(resolve=AsyncMock(return_value=credential))
+        async def dispatch(request,received):
+            self.assertEqual(self.store.depth,0)
+            self.assertEqual(request.route_id,HF_ROUTE.route_id)
+            self.assertIs(received,credential)
+            return Outcome('succeeded',response_text='mock',credential_authority_ref=received.credential_authority_ref)
+        self.adapter.execute.side_effect=dispatch
+        self.service=ExecutionService(self.store,self.adapter,credential_resolver=resolver,admission=lambda route:None)
+        result=await self.service.submit('mapped',self.store.project.id,data())
+        self.adapter.execute.assert_awaited_once()
+        self.assertEqual(resolver.resolve.await_count,1)
+        execution=next(iter(self.store.outcomes.values()))
+        self.assertEqual(execution.credential_authority_ref,'ACCOUNT_A')
+        self.assertEqual(result['execution']['status'],'succeeded')
+
+    async def test_funding_resolver_mismatch_fails_before_adapter(self):
+        from jous_supply.contracts import ResolvedSupplierCredential
+        authority_id=uuid4(); digest=b'b'*32
+        self.store.funding_authority={"funding_authority_id":authority_id,"authority_version":1,
+            "authority_digest":digest,"scope":"JOUS_GLOBAL","organization_id":None,
+            "supplier_id":HF_ROUTE.supplier_id,"route_id":HF_ROUTE.route_id,"route_version":1,
+            "credential_authority_ref":"ACCOUNT_A","cost_bearer":"JOUS_BORNE"}
+        def decision(task):
+            return {"task_id":task.id,"organization_id":task.organization_id,"project_id":task.project_id,
+                "actor_user_id":task.actor_user_id,"dispatch_claim_id":task.dispatch_claim_id,
+                "logical_model_id":task.logical_model_id,"selected_route_id":HF_ROUTE.route_id,
+                "selected_route_version":1,"pricing_version_id":"price-v1","pricing_authority_id":"price-v1",
+                "pricing_route_id":HF_ROUTE.route_id,"pricing_route_version":1,"pricing_status":"approved",
+                "pricing_is_revoked":False,"funding_authority_id":authority_id,"funding_authority_version":1,
+                "funding_authority_digest":digest}
+        self.store.decision=decision
+        resolver=SimpleNamespace(resolve=AsyncMock(return_value=ResolvedSupplierCredential(
+            "ACCOUNT_B",HF_ROUTE.supplier_id,HF_ROUTE.underlying_provider,"fake-secret-v2")))
+        self.service=ExecutionService(self.store,self.adapter,credential_resolver=resolver,admission=lambda route:None)
+        result=await self.service.submit('mapped',self.store.project.id,data())
+        self.adapter.execute.assert_not_awaited()
+        self.assertEqual(result['execution']['error_code'],'not_dispatched')
+        self.assertIsNone(result['execution'].get('credential_authority_ref'))
+
+    async def test_adapter_provenance_mismatch_does_not_persist_execution(self):
+        from jous_supply.contracts import ResolvedSupplierCredential
+        authority_id=uuid4(); digest=b'c'*32
+        self.store.funding_authority={"funding_authority_id":authority_id,"authority_version":1,
+            "authority_digest":digest,"scope":"JOUS_GLOBAL","organization_id":None,
+            "supplier_id":HF_ROUTE.supplier_id,"route_id":HF_ROUTE.route_id,"route_version":1,
+            "credential_authority_ref":"ACCOUNT_A","cost_bearer":"JOUS_BORNE"}
+        def decision(task):
+            return {"task_id":task.id,"organization_id":task.organization_id,"project_id":task.project_id,
+                "actor_user_id":task.actor_user_id,"dispatch_claim_id":task.dispatch_claim_id,
+                "logical_model_id":task.logical_model_id,"selected_route_id":HF_ROUTE.route_id,
+                "selected_route_version":1,"pricing_version_id":"price-v1","pricing_authority_id":"price-v1",
+                "pricing_route_id":HF_ROUTE.route_id,"pricing_route_version":1,"pricing_status":"approved",
+                "pricing_is_revoked":False,"funding_authority_id":authority_id,"funding_authority_version":1,
+                "funding_authority_digest":digest}
+        self.store.decision=decision
+        resolver=SimpleNamespace(resolve=AsyncMock(return_value=ResolvedSupplierCredential(
+            "ACCOUNT_A",HF_ROUTE.supplier_id,HF_ROUTE.underlying_provider,"fake-secret-v1")))
+        self.adapter.execute.side_effect=None
+        self.adapter.execute.return_value=Outcome('succeeded',response_text='mock',credential_authority_ref='ACCOUNT_B')
+        self.service=ExecutionService(self.store,self.adapter,credential_resolver=resolver,admission=lambda route:None)
+        with self.assertRaises(HTTPException):
+            await self.service.submit('mapped',self.store.project.id,data())
+        self.assertEqual(self.adapter.execute.await_count,1)
+        self.assertFalse(self.store.outcomes)
 
     async def test_dispatch_wall_rollback_cannot_extend_monotonic_supplier_allowance(self):
         from unittest.mock import patch

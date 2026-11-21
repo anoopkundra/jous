@@ -8,6 +8,7 @@ import unittest
 from jous_api.route_economics import PricingVersion, RouteVersion
 from jous_api.route_economics_validation import (
     EXPECTED_CONSTRAINTS, EXPECTED_POLICIES, POLICY_SOURCE, TABLES, _source_check_asts,
+    _economic_funding_check_ast,
     validate_source_route_pricing,
 )
 from jous_api.product_runtime_validation import canonical_check_expression
@@ -31,6 +32,19 @@ HARDENING_SPEC.loader.exec_module(HARDENING)
 class RouteEconomicsMigrationTests(unittest.TestCase):
     def setUp(self):
         self.sql = "\n".join(MIGRATION.UPGRADE_SQL)
+
+    def test_v14c_funding_binding_is_additive_and_checked_by_successor_validator(self):
+        migration_path = ROOT / "services/api/migrations/versions/0009_economic_ledger_core.py"
+        source = migration_path.read_text(encoding="utf-8")
+        for fragment in (
+            "ALTER TABLE public.route_decisions ADD COLUMN funding_authority_id uuid",
+            "ALTER TABLE public.route_decisions ADD COLUMN funding_authority_version integer",
+            "ALTER TABLE public.route_decisions ADD COLUMN funding_authority_digest bytea",
+            "route_decision_funding_authority_guard",
+            "Persisted RouteDecision funding binding is immutable",
+        ):
+            self.assertIn(fragment, source)
+        self.assertIsNotNone(_economic_funding_check_ast())
 
     def test_revision_parent_and_exact_three_tables(self):
         self.assertEqual(MIGRATION.revision, "0005_route_economics")
