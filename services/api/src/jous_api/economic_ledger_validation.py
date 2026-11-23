@@ -150,7 +150,9 @@ async def validate_economic_ledger_catalog(connection):
             raise ValueError()
         if await connection.scalar(text("""SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
           WHERE m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')
-             OR m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))
+             OR (m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')
+                 AND (m.member<>(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='postgres')
+                      OR m.inherit_option OR m.set_option)))
           OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))
           OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspowner=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))
           OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.proowner=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor'))""")):

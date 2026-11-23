@@ -64,6 +64,132 @@ class EconomicLedgerPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await engine.dispose()
 
+    async def test_processor_membership_direction_and_safe_platform_edge(self):
+        import asyncpg
+        from sqlalchemy.engine import make_url
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from jous_api.database import DatabaseUnavailable
+        from jous_api.economic_ledger_validation import validate_economic_ledger_catalog
+
+        admin = await asyncpg.connect(self.admin_url)
+        engine = create_async_engine(make_url(self.admin_url).set(
+            drivername="postgresql+asyncpg"), echo=False, hide_parameters=True)
+        probe = "v14c_membership_probe_" + uuid4().hex
+        probe_created = False
+
+        async def apply_cleanup(statements):
+            failures = []
+            for statement in statements:
+                try:
+                    await admin.execute(statement)
+                except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+                    failures.append((statement, exc))
+            if failures:
+                raise AssertionError(
+                    f"Membership cleanup failed for {len(failures)} statement(s)") from failures[0][1]
+
+        async def assert_safe_baseline():
+            rows = await admin.fetch("""SELECT granted.rolname,member.rolname,
+              m.inherit_option,m.set_option FROM pg_catalog.pg_auth_members m
+              JOIN pg_catalog.pg_roles granted ON granted.oid=m.roleid
+              JOIN pg_catalog.pg_roles member ON member.oid=m.member
+              WHERE m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')
+                 OR m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')""")
+            self.assertEqual([(r[0], r[1], r[2], r[3]) for r in rows],
+                             [("jous_economic_processor", "postgres", False, False)])
+            self.assertEqual(await admin.fetchval("""SELECT count(*) FROM pg_catalog.pg_auth_members
+              WHERE member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')"""), 0)
+            self.assertEqual(await admin.fetchval("""SELECT count(*) FROM pg_catalog.pg_auth_members
+              WHERE roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')
+                AND member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_runtime')"""), 0)
+
+        async def restore_safe_baseline():
+            cleanup_statements = [
+                'REVOKE postgres FROM jous_economic_processor',
+                'REVOKE jous_runtime FROM jous_economic_processor',
+                'REVOKE jous_economic_processor FROM jous_runtime',
+                'REVOKE jous_economic_processor FROM postgres',
+            ]
+            if probe_created:
+                cleanup_statements.extend((
+                    f'REVOKE "{probe}" FROM jous_economic_processor',
+                    f'REVOKE jous_economic_processor FROM "{probe}"',
+                ))
+            await apply_cleanup((
+                *cleanup_statements,
+            ))
+            await admin.execute(
+                'GRANT jous_economic_processor TO postgres WITH INHERIT FALSE, SET FALSE')
+            await assert_safe_baseline()
+
+        async def validator_passes():
+            async with engine.connect() as connection:
+                await validate_economic_ledger_catalog(connection)
+
+        async def validator_rejects():
+            with self.assertRaises(DatabaseUnavailable):
+                await validator_passes()
+
+        async def scenario(statements, *, accepted, no_memberships=False):
+            try:
+                await restore_safe_baseline()
+                for statement in statements:
+                    await admin.execute(statement)
+                if no_memberships:
+                    memberships = await admin.fetchval("""SELECT count(*) FROM pg_catalog.pg_auth_members
+                      WHERE roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')
+                         OR member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')""")
+                    self.assertEqual(memberships, 0)
+                if accepted:
+                    await validator_passes()
+                else:
+                    await validator_rejects()
+            finally:
+                await restore_safe_baseline()
+
+        try:
+            await assert_safe_baseline()
+            await admin.execute(f'CREATE ROLE "{probe}" NOLOGIN')
+            probe_created = True
+            await scenario((
+                'REVOKE jous_economic_processor FROM postgres',
+            ), accepted=True, no_memberships=True)  # no processor membership
+            await scenario((), accepted=True)  # exact platform-safe reverse edge
+            await scenario((
+                f'GRANT "{probe}" TO jous_economic_processor',
+            ), accepted=False)  # processor is member of arbitrary role
+            await scenario((
+                'REVOKE jous_economic_processor FROM postgres',
+                'GRANT postgres TO jous_economic_processor',
+            ), accepted=False)  # processor is member of postgres
+            await scenario((
+                'GRANT jous_runtime TO jous_economic_processor',
+            ), accepted=False)  # processor is member of runtime
+            await scenario((
+                'GRANT jous_economic_processor TO postgres WITH INHERIT TRUE, SET FALSE',
+            ), accepted=False)  # unsafe reverse inherit option
+            await scenario((
+                'GRANT jous_economic_processor TO postgres WITH INHERIT FALSE, SET TRUE',
+            ), accepted=False)  # unsafe reverse set option
+            await scenario((
+                f'GRANT jous_economic_processor TO "{probe}" WITH INHERIT FALSE, SET FALSE',
+            ), accepted=False)  # arbitrary reverse member is not allowed
+            await scenario((
+                'GRANT jous_economic_processor TO jous_runtime WITH INHERIT FALSE, SET FALSE',
+            ), accepted=False)  # runtime reverse member is independently forbidden
+        finally:
+            try:
+                await restore_safe_baseline()
+            finally:
+                try:
+                    if probe_created:
+                        await admin.execute(f'DROP ROLE IF EXISTS "{probe}"')
+                finally:
+                    try:
+                        await engine.dispose()
+                    finally:
+                        await admin.close()
+
     async def test_restricted_roles_source_binding_and_balanced_posting(self):
         import asyncpg
         from jous_api.usage_events import normalize_execution

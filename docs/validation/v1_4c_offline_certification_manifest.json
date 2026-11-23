@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "certification_id": "JOUS.V1.4C.ROLE_COMPATIBILITY.LOCAL",
+  "base_commit": "5fdfb37a60eed5d4a6e3a58eae3cb052d076a7f4",
+  "candidate_classification": "role_membership_compatibility_repair",
+  "candidate_paths": [
+    "services/api/migrations/versions/0009_economic_ledger_core.py",
+    "services/api/src/jous_api/economic_ledger_validation.py",
+    "tests/integration/test_v1_4c_economic_ledger_postgresql.py",
+    "tests/test_economic_ledger_schema.py",
+    "tests/test_check_profile_scope.py"
+  ],
+  "logical_module_count": 43,
+  "logical_module_list_sha256": "dfc822b80c8b7ef9c1ce2da760c2be75d1abd8089e82fb92fac0abc3f32317eb",
+  "process_isolation": "one_fresh_interpreter_per_module",
+  "offline_pythonpath": "services/api/src;packages/provider-adapters/src;tests;tests/integration",
+  "offline_results": {
+    "test_count": 728,
+    "failures": 0,
+    "errors": 0,
+    "skips": 24,
+    "expected_failures": 0,
+    "unexpected_successes": 0,
+    "skip_breakdown": {
+      "V12": 10,
+      "V14": 10,
+      "V14C": 3,
+      "V13A_0006": 1
+    }
+  },
+  "safety": {
+    "database_connections_attempted": 0,
+    "managed_db_accessed": false,
+    "external_network_connections_attempted": 0
+  },
+  "consolidated_preload": {
+    "module": "test_step7_consolidated",
+    "preload": "jous_api.step7_catalog",
+    "reason": "deterministic import availability after intentional Step7 path filtering"
+  },
+  "profile_scope_evidence": {
+    "task_checks": 7,
+    "execution_checks": 10,
+    "total_checks": 17,
+    "credential_authority_check_covered": true
+  },
+  "accepted_postgresql_certification_continuity": {
+    "accepted": true,
+    "postgresql_version": "17.11",
+    "migration_path": [
+      "0006_snapshot_binding",
+      "0007_usage_events",
+      "0008_usage_event_acl_hardening",
+      "0009_economic_ledger_core"
+    ],
+    "integration_tests": 3,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "runtime_economic_write_boundary": "PASS",
+    "processor_economic_privilege_boundary": "PASS"
+  },
+  "candidate_sha256": {
+    "services/api/migrations/versions/0007_usage_events.py": "285cb431feeb94b132b8e4f23516d3b2970471026228b71bbb73f66d78384340",
+    "services/api/migrations/versions/0008_usage_event_acl_hardening.py": "e046d4a293da7e083cd2063e9886bf3c0e88d644788f8fcedb23b594af0a6cf8",
+    "services/api/migrations/versions/0009_economic_ledger_core.py": "5854437ac25d5d0f24842f11563ca685498cfcd636bcec401c5628dbf0916d30",
+    "services/api/src/jous_api/economic_ledger_validation.py": "08146d1811aa07b2e5c4333a5d0b852cae2add301f9392a777eaac93692e34d7",
+    "tests/test_economic_ledger_schema.py": "d33a5b48012a4c0b1a625b28ba5f7bd4586d503ee0166e82eb4a0e01b5929e06",
+    "tests/integration/test_v1_4c_economic_ledger_postgresql.py": "2f170646d6297d9a07bcea4a031386370c1c75e7017a30f209f40e79e8039d8a",
+    "tests/test_check_profile_scope.py": "fb99f6b1af811d47ac6e54ded1d0a2df132ec50137fe93a4bac72544e7b25985"
+  }
+}

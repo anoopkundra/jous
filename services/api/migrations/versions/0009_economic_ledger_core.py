@@ -29,8 +29,10 @@ BEGIN
        (NOT r.rolcanlogin OR r.rolsuper OR r.rolbypassrls OR r.rolcreatedb OR
         r.rolcreaterole OR r.rolreplication OR r.rolinherit)) OR
      EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
-      WHERE m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor') OR
-            m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')) OR
+      WHERE m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor') OR
+            (m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor') AND
+             (m.member<>(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='postgres') OR
+              m.inherit_option OR m.set_option))) OR
      pg_catalog.pg_has_role('jous_runtime','jous_economic_processor','MEMBER') THEN
     RAISE EXCEPTION 'Economic processor role attributes or membership are unsafe';
   END IF;

@@ -22,7 +22,12 @@ class CheckProfileScopeTests(unittest.TestCase):
         cls.head = head_parser()
 
     def test_frozen_source_expressions(self):
-        self.assertEqual(len(TASK_CHECKS) + len(EXECUTION_CHECKS), 16)
+        self.assertEqual(len(TASK_CHECKS) + len(EXECUTION_CHECKS), 17)
+        self.assertEqual(
+            EXECUTION_CHECKS['ck_executions_credential_authority_ref'],
+            'credential_authority_ref IS NULL OR (length(btrim(credential_authority_ref)) > 0 AND '
+            'octet_length(credential_authority_ref) <= 255)',
+        )
         for table, checks in (('tasks', TASK_CHECKS), ('executions', EXECUTION_CHECKS)):
             for name, expression in checks.items():
                 with self.subTest(table=table, name=name):

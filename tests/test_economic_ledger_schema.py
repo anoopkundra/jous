@@ -111,6 +111,12 @@ class EconomicLedgerSchemaTests(unittest.TestCase):
     def test_processor_is_preprovisioned_and_runtime_gets_no_economic_writes(self):
         self.assertNotRegex(self.sql, r"(?im)^\s*CREATE\s+ROLE\b")
         self.assertIn("Economic processor role attributes or membership are unsafe", self.sql)
+        membership_guard = self.sql.split("Economic processor role attributes or membership are unsafe", 1)[0].rsplit("IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r", 1)[1]
+        self.assertIn("m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor')", membership_guard)
+        self.assertIn("m.member<>(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='postgres')", membership_guard)
+        self.assertIn("m.inherit_option OR m.set_option", membership_guard)
+        self.assertIn("pg_catalog.pg_has_role('jous_runtime','jous_economic_processor','MEMBER')", membership_guard)
+        self.assertNotIn("m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='jous_economic_processor') OR", membership_guard)
         self.assertIn("REVOKE ALL PRIVILEGES ON TABLE public.economic_receipts", self.sql)
         self.assertIn("TO jous_economic_processor", self.sql)
         self.assertIn("jous_runtime", self.sql)
